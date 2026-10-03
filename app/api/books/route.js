@@ -15,6 +15,31 @@ function cleanText(value = "") {
     .trim();
 }
 
+function cleanOfferTitle(value = "") {
+  let text = cleanText(value);
+
+  const stopWords = [
+    "Gatunek:",
+    "Język publikacji:",
+    "Okładka:",
+    "Tytuł:",
+    "Kup teraz",
+    "Licytacja",
+    "Często sprzedaje",
+    "Sprzedający:"
+  ];
+
+  for (const word of stopWords) {
+    const index = text.indexOf(word);
+
+    if (index > 0) {
+      text = text.slice(0, index);
+    }
+  }
+
+  return text.trim();
+}
+
 function normalize(value = "") {
   return value
     .toLowerCase()
@@ -29,7 +54,7 @@ function parsePrice(value) {
   if (!value) return null;
 
   const match = value.match(
-    /(\d[\d\s]*[,.]\d{2}|\d+)/
+    /(\d[\d\s]*(?:[,.]\d{2})?)/
   );
 
   if (!match) return null;
@@ -81,6 +106,7 @@ async function searchLokalnie(query) {
 
   const response = await fetch(url, {
     cache: "no-store",
+
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -106,12 +132,6 @@ async function searchLokalnie(query) {
 
   const results = [];
 
-  /*
-    Szukamy linków do ofert.
-    Allegro Lokalnie część danych trzyma
-    bezpośrednio w HTML/JSON strony.
-  */
-
   const linkRegex =
     /href=["'](\/oferta\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
@@ -121,7 +141,7 @@ async function searchLokalnie(query) {
     const relativeUrl = match[1];
     const anchorHtml = match[2];
 
-    const title = cleanText(anchorHtml);
+    const title = cleanOfferTitle(anchorHtml);
 
     if (!title || title.length < 3) {
       continue;
@@ -137,7 +157,7 @@ async function searchLokalnie(query) {
 
     const priceMatch =
       around.match(
-        /(\d[\d\s]*[,.]\d{2})\s*zł/i
+        /(\d[\d\s]*(?:[,.]\d{2})?)\s*zł/i
       );
 
     const rawPrice =
@@ -305,6 +325,7 @@ export async function GET(request) {
       limit = 1;
     }
 
+    // Na razie max 3 książki na jedno wywołanie
     limit = Math.min(limit, 3);
 
     const selected =
@@ -332,6 +353,9 @@ export async function GET(request) {
       }
     }
 
+    const nextOffset =
+      offset + selected.length;
+
     return new Response(
       JSON.stringify({
         updatedAt:
@@ -352,6 +376,14 @@ export async function GET(request) {
           books.filter(
             (b) => b.found
           ).length,
+
+        nextOffset:
+          nextOffset < BOOKS.length
+            ? nextOffset
+            : null,
+
+        finished:
+          nextOffset >= BOOKS.length,
 
         books,
       }),
