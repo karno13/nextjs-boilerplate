@@ -76,7 +76,9 @@ function scoreMatch(wanted, found) {
 
   if (!a || !b) return 0;
 
-  if (a === b) return 100;
+  if (a === b) {
+    return 100;
+  }
 
   if (b.includes(a)) {
     return 95;
@@ -105,6 +107,148 @@ function scoreMatch(wanted, found) {
   return (
     matches / words.length
   ) * 100;
+}
+
+function offerScore(book, result) {
+  const text = normalize(result.title);
+
+  let score = Math.max(
+    scoreMatch(
+      book.originalTitle,
+      result.title
+    ),
+
+    book.polishTitle
+      ? scoreMatch(
+          book.polishTitle,
+          result.title
+        )
+      : 0
+  );
+
+  /*
+    Bonusy.
+
+    Nie są wymagane.
+    Oferta może przejść również bez nich.
+  */
+
+  const bonusWords = [
+    "warhammer",
+    "black library",
+    "horus heresy",
+    "40k",
+    "40000",
+    "games workshop",
+    "powiesc",
+    "ksiazka",
+  ];
+
+  for (const word of bonusWords) {
+    if (
+      text.includes(
+        normalize(word)
+      )
+    ) {
+      score += 10;
+    }
+  }
+
+  /*
+    Delikatny bonus za nazwę serii.
+
+    Np. HORUS HERESY, CIAPHAS CAIN,
+    GAUNT'S GHOSTS itd.
+  */
+
+  if (book.section) {
+    const sectionWords =
+      normalize(book.section)
+        .split(" ")
+        .filter(
+          (word) =>
+            word.length >= 4 &&
+            ![
+              "numerowane",
+              "powiesci",
+              "antologie",
+              "omnibus",
+              "inne",
+            ].includes(word)
+        );
+
+    for (const word of sectionWords) {
+      if (text.includes(word)) {
+        score += 4;
+      }
+    }
+  }
+
+  /*
+    Mocne kary za rzeczy,
+    które prawie na pewno nie są książkami.
+  */
+
+  const badWords = [
+    "banknot",
+    "banknoty",
+    "moneta",
+    "monety",
+    "booster",
+    "boostery",
+    "karta pokemon",
+    "karty pokemon",
+    "lego",
+    "koszulka",
+    "plakat",
+    "kubek",
+    "brelok",
+    "naklejka",
+    "naklejki",
+    "puzzle",
+    "figurki",
+    "figurka",
+    "miniatura",
+    "miniaturka",
+  ];
+
+  for (const word of badWords) {
+    if (
+      text.includes(
+        normalize(word)
+      )
+    ) {
+      score -= 60;
+    }
+  }
+
+  /*
+    Mniejsze kary.
+    To mogą być produkty związane z Warhammerem,
+    więc nie odrzucamy ich automatycznie.
+  */
+
+  const softBadWords = [
+    "gra planszowa",
+    "podrecznik",
+    "codex",
+    "kodeks",
+    "dice",
+    "kostki",
+    "model",
+  ];
+
+  for (const word of softBadWords) {
+    if (
+      text.includes(
+        normalize(word)
+      )
+    ) {
+      score -= 20;
+    }
+  }
+
+  return Math.round(score);
 }
 
 async function searchLokalnie(query) {
@@ -149,7 +293,8 @@ async function searchLokalnie(query) {
     );
   }
 
-  const html = await response.text();
+  const html =
+    await response.text();
 
   const results = [];
 
@@ -158,30 +303,48 @@ async function searchLokalnie(query) {
 
   let match;
 
-  while ((match = linkRegex.exec(html)) !== null) {
-    const relativeUrl = match[1];
-    const anchorHtml = match[2];
+  while (
+    (match = linkRegex.exec(html)) !== null
+  ) {
+    const relativeUrl =
+      match[1];
+
+    const anchorHtml =
+      match[2];
 
     const fullText =
       cleanText(anchorHtml);
+
+    /*
+      Cena może znajdować się
+      bezpośrednio wewnątrz linku.
+    */
 
     let priceMatch =
       fullText.match(
         /(?:Kup teraz|Licytacja)?\s*(\d[\d\s]*(?:[,.]\d{2})?)\s*zł/i
       );
 
-    const around = html.slice(
-      Math.max(
-        0,
-        match.index - 2500
-      ),
-      Math.min(
-        html.length,
-        match.index +
-          match[0].length +
-          3500
-      )
-    );
+    const around =
+      html.slice(
+        Math.max(
+          0,
+          match.index - 2500
+        ),
+
+        Math.min(
+          html.length,
+
+          match.index +
+            match[0].length +
+            3500
+        )
+      );
+
+    /*
+      Jeśli nie ma ceny wewnątrz linku,
+      szukamy w pobliskim HTML.
+    */
 
     if (!priceMatch) {
       priceMatch =
@@ -195,11 +358,17 @@ async function searchLokalnie(query) {
 
     const price =
       priceMatch?.[1]
-        ? parsePrice(priceMatch[1])
-        : parsePrice(rawPrice);
+        ? parsePrice(
+            priceMatch[1]
+          )
+        : parsePrice(
+            rawPrice
+          );
 
     const title =
-      cleanOfferTitle(anchorHtml);
+      cleanOfferTitle(
+        anchorHtml
+      );
 
     if (
       !title ||
@@ -241,10 +410,18 @@ async function searchLokalnie(query) {
     }
   }
 
+  /*
+    Usuwamy duplikaty
+    tej samej oferty.
+  */
+
   const unique =
     new Map();
 
-  for (const result of results) {
+  for (
+    const result
+    of results
+  ) {
     if (
       !unique.has(
         result.url
@@ -263,8 +440,14 @@ async function searchLokalnie(query) {
 }
 
 async function findBook(book) {
-  // Jedno zapytanie na książkę,
-  // żeby ograniczyć rate limit.
+  /*
+    Nie dodajemy tutaj na sztywno:
+    "Warhammer", "książka" itd.
+
+    Dzięki temu nie zawężamy
+    za mocno wyszukiwania.
+  */
+
   const query =
     book.originalTitle;
 
@@ -275,36 +458,47 @@ async function findBook(book) {
 
   const offers = [];
 
-  for (const result of results) {
+  for (
+    const result
+    of results
+  ) {
     const score =
-      Math.max(
-        scoreMatch(
-          book.originalTitle,
-          result.title
-        ),
-
-        book.polishTitle
-          ? scoreMatch(
-              book.polishTitle,
-              result.title
-            )
-          : 0
+      offerScore(
+        book,
+        result
       );
+
+    /*
+      60 = dość liberalny próg.
+
+      Dobry tytuł przejdzie nawet bez
+      słowa Warhammer.
+
+      Śmieci typu banknot dostaną
+      dużą karę.
+    */
 
     if (score >= 60) {
       offers.push({
         ...result,
 
         matchScore:
-          Math.round(score),
+          score,
       });
     }
   }
 
+  /*
+    Usuwamy duplikaty.
+  */
+
   const uniqueOffers =
     new Map();
 
-  for (const offer of offers) {
+  for (
+    const offer
+    of offers
+  ) {
     if (
       !uniqueOffers.has(
         offer.url
@@ -317,34 +511,64 @@ async function findBook(book) {
     }
   }
 
+  /*
+    Sortowanie:
+    najpierw najwyższa trafność,
+    potem najniższa cena.
+  */
+
   const finalOffers =
     [
       ...uniqueOffers.values(),
-    ].sort((a, b) => {
-      if (
-        a.price == null &&
-        b.price == null
-      ) {
-        return 0;
-      }
+    ].sort(
+      (a, b) => {
+        if (
+          b.matchScore !==
+          a.matchScore
+        ) {
+          return (
+            b.matchScore -
+            a.matchScore
+          );
+        }
 
-      if (
-        a.price == null
-      ) {
-        return 1;
-      }
+        if (
+          a.price == null &&
+          b.price == null
+        ) {
+          return 0;
+        }
 
-      if (
-        b.price == null
-      ) {
-        return -1;
-      }
+        if (
+          a.price == null
+        ) {
+          return 1;
+        }
 
-      return (
-        a.price -
-        b.price
-      );
-    });
+        if (
+          b.price == null
+        ) {
+          return -1;
+        }
+
+        return (
+          a.price -
+          b.price
+        );
+      }
+    );
+
+  const cheapestOffer =
+    finalOffers
+      .filter(
+        (offer) =>
+          offer.price != null
+      )
+      .sort(
+        (a, b) =>
+          a.price -
+          b.price
+      )[0];
 
   return {
     ...book,
@@ -362,10 +586,8 @@ async function findBook(book) {
       finalOffers.length,
 
     lowestPrice:
-      finalOffers.find(
-        (offer) =>
-          offer.price != null
-      )?.price ?? null,
+      cheapestOffer?.price ??
+      null,
 
     offers:
       finalOffers.slice(
@@ -381,9 +603,10 @@ export async function GET(
   try {
     const {
       searchParams,
-    } = new URL(
-      request.url
-    );
+    } =
+      new URL(
+        request.url
+      );
 
     let offset =
       Number(
@@ -417,8 +640,11 @@ export async function GET(
       limit = 1;
     }
 
-    // Na razie maksymalnie 3 książki
-    // w jednym wywołaniu.
+    /*
+      Na razie maksymalnie 3 książki
+      na jedno wywołanie.
+    */
+
     limit =
       Math.min(
         limit,
@@ -449,6 +675,7 @@ export async function GET(
         books.push(
           result
         );
+
       } catch (error) {
         if (
           error.message.startsWith(
@@ -458,7 +685,8 @@ export async function GET(
           books.push({
             ...book,
 
-            found: false,
+            found:
+              false,
 
             source:
               "allegro_lokalnie",
@@ -470,13 +698,20 @@ export async function GET(
           rateLimited =
             true;
 
+          /*
+            Kończymy od razu.
+            Nie dokładamy kolejnych requestów,
+            gdy serwis już ogranicza ruch.
+          */
+
           break;
         }
 
         books.push({
           ...book,
 
-          found: false,
+          found:
+            false,
 
           source:
             "allegro_lokalnie",
@@ -548,6 +783,7 @@ export async function GET(
         },
       }
     );
+
   } catch (error) {
     return new Response(
       JSON.stringify({
