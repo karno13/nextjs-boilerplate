@@ -26,7 +26,7 @@ function cleanOfferTitle(value = "") {
     "Kup teraz",
     "Licytacja",
     "Często sprzedaje",
-    "Sprzedający:"
+    "Sprzedający:",
   ];
 
   for (const word of stopWords) {
@@ -77,16 +77,22 @@ function scoreMatch(wanted, found) {
   if (!a || !b) return 0;
 
   if (a === b) return 100;
-  if (b.includes(a)) return 95;
+
+  if (b.includes(a)) {
+    return 95;
+  }
 
   const words = a
     .split(" ")
     .filter((word) => word.length > 2);
 
-  const foundWords =
-    new Set(b.split(" "));
+  const foundWords = new Set(
+    b.split(" ")
+  );
 
-  if (!words.length) return 0;
+  if (!words.length) {
+    return 0;
+  }
 
   let matches = 0;
 
@@ -96,7 +102,9 @@ function scoreMatch(wanted, found) {
     }
   }
 
-  return (matches / words.length) * 100;
+  return (
+    matches / words.length
+  ) * 100;
 }
 
 async function searchLokalnie(query) {
@@ -106,7 +114,7 @@ async function searchLokalnie(query) {
 
   const response = await fetch(url, {
     next: {
-      revalidate: 3600
+      revalidate: 3600,
     },
 
     headers: {
@@ -154,28 +162,51 @@ async function searchLokalnie(query) {
     const relativeUrl = match[1];
     const anchorHtml = match[2];
 
-    const title =
-      cleanOfferTitle(anchorHtml);
+    const fullText =
+      cleanText(anchorHtml);
 
-    if (!title || title.length < 3) {
-      continue;
-    }
+    let priceMatch =
+      fullText.match(
+        /(?:Kup teraz|Licytacja)?\s*(\d[\d\s]*(?:[,.]\d{2})?)\s*zł/i
+      );
 
     const around = html.slice(
-      Math.max(0, match.index - 2500),
+      Math.max(
+        0,
+        match.index - 2500
+      ),
       Math.min(
         html.length,
-        match.index + match[0].length + 3500
+        match.index +
+          match[0].length +
+          3500
       )
     );
 
-    const priceMatch =
-      around.match(
-        /(\d[\d\s]*(?:[,.]\d{2})?)\s*zł/i
-      );
+    if (!priceMatch) {
+      priceMatch =
+        around.match(
+          /(\d[\d\s]*(?:[,.]\d{2})?)\s*zł/i
+        );
+    }
 
     const rawPrice =
       priceMatch?.[0] || null;
+
+    const price =
+      priceMatch?.[1]
+        ? parsePrice(priceMatch[1])
+        : parsePrice(rawPrice);
+
+    const title =
+      cleanOfferTitle(anchorHtml);
+
+    if (
+      !title ||
+      title.length < 3
+    ) {
+      continue;
+    }
 
     const imageMatch =
       around.match(
@@ -183,16 +214,17 @@ async function searchLokalnie(query) {
       );
 
     results.push({
-      source: "allegro_lokalnie",
+      source:
+        "allegro_lokalnie",
 
       title,
 
-      price:
-        parsePrice(rawPrice),
+      price,
 
       rawPrice,
 
-      currency: "PLN",
+      currency:
+        "PLN",
 
       image:
         imageMatch?.[1] || null,
@@ -202,15 +234,22 @@ async function searchLokalnie(query) {
         relativeUrl,
     });
 
-    if (results.length >= 50) {
+    if (
+      results.length >= 50
+    ) {
       break;
     }
   }
 
-  const unique = new Map();
+  const unique =
+    new Map();
 
   for (const result of results) {
-    if (!unique.has(result.url)) {
+    if (
+      !unique.has(
+        result.url
+      )
+    ) {
       unique.set(
         result.url,
         result
@@ -218,36 +257,44 @@ async function searchLokalnie(query) {
     }
   }
 
-  return [...unique.values()];
+  return [
+    ...unique.values(),
+  ];
 }
 
 async function findBook(book) {
-  // Tylko jedno zapytanie na książkę.
-  const query = book.originalTitle;
+  // Jedno zapytanie na książkę,
+  // żeby ograniczyć rate limit.
+  const query =
+    book.originalTitle;
 
   const results =
-    await searchLokalnie(query);
+    await searchLokalnie(
+      query
+    );
 
   const offers = [];
 
   for (const result of results) {
-    const score = Math.max(
-      scoreMatch(
-        book.originalTitle,
-        result.title
-      ),
+    const score =
+      Math.max(
+        scoreMatch(
+          book.originalTitle,
+          result.title
+        ),
 
-      book.polishTitle
-        ? scoreMatch(
-            book.polishTitle,
-            result.title
-          )
-        : 0
-    );
+        book.polishTitle
+          ? scoreMatch(
+              book.polishTitle,
+              result.title
+            )
+          : 0
+      );
 
     if (score >= 60) {
       offers.push({
         ...result,
+
         matchScore:
           Math.round(score),
       });
@@ -258,7 +305,11 @@ async function findBook(book) {
     new Map();
 
   for (const offer of offers) {
-    if (!uniqueOffers.has(offer.url)) {
+    if (
+      !uniqueOffers.has(
+        offer.url
+      )
+    ) {
       uniqueOffers.set(
         offer.url,
         offer
@@ -267,25 +318,39 @@ async function findBook(book) {
   }
 
   const finalOffers =
-    [...uniqueOffers.values()]
-      .sort((a, b) => {
-        if (
-          a.price == null &&
-          b.price == null
-        ) {
-          return 0;
-        }
+    [
+      ...uniqueOffers.values(),
+    ].sort((a, b) => {
+      if (
+        a.price == null &&
+        b.price == null
+      ) {
+        return 0;
+      }
 
-        if (a.price == null) return 1;
-        if (b.price == null) return -1;
+      if (
+        a.price == null
+      ) {
+        return 1;
+      }
 
-        return a.price - b.price;
-      });
+      if (
+        b.price == null
+      ) {
+        return -1;
+      }
+
+      return (
+        a.price -
+        b.price
+      );
+    });
 
   return {
     ...book,
 
-    searchedFor: query,
+    searchedFor:
+      query,
 
     found:
       finalOffers.length > 0,
@@ -303,39 +368,62 @@ async function findBook(book) {
       )?.price ?? null,
 
     offers:
-      finalOffers.slice(0, 20),
+      finalOffers.slice(
+        0,
+        20
+      ),
   };
 }
 
-export async function GET(request) {
+export async function GET(
+  request
+) {
   try {
-    const { searchParams } =
-      new URL(request.url);
-
-    let offset = Number(
-      searchParams.get("offset") || 0
+    const {
+      searchParams,
+    } = new URL(
+      request.url
     );
 
-    let limit = Number(
-      searchParams.get("limit") || 1
-    );
+    let offset =
+      Number(
+        searchParams.get(
+          "offset"
+        ) || 0
+      );
+
+    let limit =
+      Number(
+        searchParams.get(
+          "limit"
+        ) || 1
+      );
 
     if (
-      !Number.isInteger(offset) ||
+      !Number.isInteger(
+        offset
+      ) ||
       offset < 0
     ) {
       offset = 0;
     }
 
     if (
-      !Number.isInteger(limit) ||
+      !Number.isInteger(
+        limit
+      ) ||
       limit < 1
     ) {
       limit = 1;
     }
 
-    // Na razie maksymalnie 3.
-    limit = Math.min(limit, 3);
+    // Na razie maksymalnie 3 książki
+    // w jednym wywołaniu.
+    limit =
+      Math.min(
+        limit,
+        3
+      );
 
     const selected =
       BOOKS.slice(
@@ -345,15 +433,22 @@ export async function GET(request) {
 
     const books = [];
 
-    let rateLimited = false;
+    let rateLimited =
+      false;
 
-    for (const book of selected) {
+    for (
+      const book
+      of selected
+    ) {
       try {
         const result =
-          await findBook(book);
+          await findBook(
+            book
+          );
 
-        books.push(result);
-
+        books.push(
+          result
+        );
       } catch (error) {
         if (
           error.message.startsWith(
@@ -372,10 +467,9 @@ export async function GET(request) {
               error.message,
           });
 
-          rateLimited = true;
+          rateLimited =
+            true;
 
-          // Nie próbujemy kolejnych książek,
-          // jeśli serwis już nas ogranicza.
           break;
         }
 
@@ -394,17 +488,20 @@ export async function GET(request) {
     }
 
     const nextOffset =
-      offset + books.length;
+      offset +
+      books.length;
 
     const foundCount =
       books.filter(
-        (book) => book.found
+        (book) =>
+          book.found
       ).length;
 
     return new Response(
       JSON.stringify({
         updatedAt:
-          new Date().toISOString(),
+          new Date()
+            .toISOString(),
 
         source:
           "allegro_lokalnie",
@@ -426,12 +523,14 @@ export async function GET(request) {
         rateLimited,
 
         nextOffset:
-          nextOffset < BOOKS.length
+          nextOffset <
+          BOOKS.length
             ? nextOffset
             : null,
 
         finished:
-          nextOffset >= BOOKS.length,
+          nextOffset >=
+          BOOKS.length,
 
         books,
       }),
@@ -444,14 +543,11 @@ export async function GET(request) {
           "Access-Control-Allow-Origin":
             "*",
 
-          // Nasz endpoint też może być cache'owany
-          // przez przeglądarkę/CDN przez 5 minut.
           "Cache-Control":
             "public, s-maxage=300, stale-while-revalidate=3600",
         },
       }
     );
-
   } catch (error) {
     return new Response(
       JSON.stringify({
@@ -463,7 +559,8 @@ export async function GET(request) {
       }),
 
       {
-        status: 500,
+        status:
+          500,
 
         headers: {
           "Content-Type":
