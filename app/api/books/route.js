@@ -105,7 +105,9 @@ async function searchLokalnie(query) {
     encodeURIComponent(query);
 
   const response = await fetch(url, {
-    cache: "no-store",
+    next: {
+      revalidate: 3600
+    },
 
     headers: {
       "User-Agent":
@@ -121,6 +123,17 @@ async function searchLokalnie(query) {
         "application/xml;q=0.9,*/*;q=0.8",
     },
   });
+
+  if (response.status === 429) {
+    const retryAfter =
+      response.headers.get("retry-after");
+
+    throw new Error(
+      retryAfter
+        ? `RATE_LIMITED - retry after ${retryAfter}s`
+        : "RATE_LIMITED"
+    );
+  }
 
   if (!response.ok) {
     throw new Error(
@@ -141,7 +154,8 @@ async function searchLokalnie(query) {
     const relativeUrl = match[1];
     const anchorHtml = match[2];
 
-    const title = cleanOfferTitle(anchorHtml);
+    const title =
+      cleanOfferTitle(anchorHtml);
 
     if (!title || title.length < 3) {
       continue;
@@ -208,51 +222,43 @@ async function searchLokalnie(query) {
 }
 
 async function findBook(book) {
-  const queries = [
-    book.originalTitle,
-    book.polishTitle,
-  ].filter(Boolean);
+  // Tylko jedno zapytanie na książkę.
+  const query = book.originalTitle;
 
-  const allOffers = [];
+  const results =
+    await searchLokalnie(query);
 
-  for (const query of queries) {
-    const results =
-      await searchLokalnie(query);
+  const offers = [];
 
-    for (const result of results) {
-      const score = Math.max(
-        scoreMatch(
-          book.originalTitle,
-          result.title
-        ),
+  for (const result of results) {
+    const score = Math.max(
+      scoreMatch(
+        book.originalTitle,
+        result.title
+      ),
 
-        book.polishTitle
-          ? scoreMatch(
-              book.polishTitle,
-              result.title
-            )
-          : 0
-      );
+      book.polishTitle
+        ? scoreMatch(
+            book.polishTitle,
+            result.title
+          )
+        : 0
+    );
 
-      if (score >= 60) {
-        allOffers.push({
-          ...result,
-          matchScore:
-            Math.round(score),
-        });
-      }
+    if (score >= 60) {
+      offers.push({
+        ...result,
+        matchScore:
+          Math.round(score),
+      });
     }
   }
 
   const uniqueOffers =
     new Map();
 
-  for (const offer of allOffers) {
-    if (
-      !uniqueOffers.has(
-        offer.url
-      )
-    ) {
+  for (const offer of offers) {
+    if (!uniqueOffers.has(offer.url)) {
       uniqueOffers.set(
         offer.url,
         offer
@@ -260,7 +266,7 @@ async function findBook(book) {
     }
   }
 
-  const offers =
+  const finalOffers =
     [...uniqueOffers.values()]
       .sort((a, b) => {
         if (
@@ -279,22 +285,25 @@ async function findBook(book) {
   return {
     ...book,
 
+    searchedFor: query,
+
     found:
-      offers.length > 0,
+      finalOffers.length > 0,
 
     source:
       "allegro_lokalnie",
 
     offerCount:
-      offers.length,
+      finalOffers.length,
 
     lowestPrice:
-      offers.find(
-        (o) => o.price != null
+      finalOffers.find(
+        (offer) =>
+          offer.price != null
       )?.price ?? null,
 
     offers:
-      offers.slice(0, 20),
+      finalOffers.slice(0, 20),
   };
 }
 
@@ -325,7 +334,7 @@ export async function GET(request) {
       limit = 1;
     }
 
-    // Na razie max 3 książki na jedno wywołanie
+    // Na razie maksymalnie 3.
     limit = Math.min(limit, 3);
 
     const selected =
@@ -336,17 +345,48 @@ export async function GET(request) {
 
     const books = [];
 
+    let rateLimited = false;
+
     for (const book of selected) {
       try {
-        books.push(
-          await findBook(book)
-        );
+        const result =
+          await findBook(book);
+
+        books.push(result);
+
       } catch (error) {
+        if (
+          error.message.startsWith(
+            "RATE_LIMITED"
+          )
+        ) {
+          books.push({
+            ...book,
+
+            found: false,
+
+            source:
+              "allegro_lokalnie",
+
+            error:
+              error.message,
+          });
+
+          rateLimited = true;
+
+          // Nie próbujemy kolejnych książek,
+          // jeśli serwis już nas ogranicza.
+          break;
+        }
+
         books.push({
           ...book,
+
           found: false,
+
           source:
             "allegro_lokalnie",
+
           error:
             error.message,
         });
@@ -354,7 +394,12 @@ export async function GET(request) {
     }
 
     const nextOffset =
-      offset + selected.length;
+      offset + books.length;
+
+    const foundCount =
+      books.filter(
+        (book) => book.found
+      ).length;
 
     return new Response(
       JSON.stringify({
@@ -369,13 +414,16 @@ export async function GET(request) {
 
         offset,
 
+        requested:
+          limit,
+
         processed:
           books.length,
 
         found:
-          books.filter(
-            (b) => b.found
-          ).length,
+          foundCount,
+
+        rateLimited,
 
         nextOffset:
           nextOffset < BOOKS.length
@@ -396,8 +444,10 @@ export async function GET(request) {
           "Access-Control-Allow-Origin":
             "*",
 
+          // Nasz endpoint też może być cache'owany
+          // przez przeglądarkę/CDN przez 5 minut.
           "Cache-Control":
-            "no-store",
+            "public, s-maxage=300, stale-while-revalidate=3600",
         },
       }
     );
@@ -418,6 +468,9 @@ export async function GET(request) {
         headers: {
           "Content-Type":
             "application/json; charset=utf-8",
+
+          "Access-Control-Allow-Origin":
+            "*",
         },
       }
     );
