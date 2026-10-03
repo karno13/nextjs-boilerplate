@@ -3,9 +3,6 @@ import { BOOKS } from "../../../lib/books.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const sleep = (ms) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
 function cleanText(value = "") {
   return value
     .replace(/<[^>]+>/g, "")
@@ -31,28 +28,26 @@ function normalize(value = "") {
 function parsePrice(value) {
   if (!value) return null;
 
-  const match = value.match(
-    /(\d{1,6}(?:[.,]\d{2})?)/
-  );
+  const match = value.match(/(\d[\d\s]*[,.]\d{2}|\d+)/);
 
   if (!match) return null;
 
-  const number = Number(
-    match[1].replace(",", ".")
-  );
+  const cleaned = match[1]
+    .replace(/\s/g, "")
+    .replace(",", ".");
 
-  return Number.isFinite(number)
-    ? number
-    : null;
+  const number = Number(cleaned);
+
+  return Number.isFinite(number) ? number : null;
 }
 
-function matchScore(wantedTitle, amazonTitle) {
+function scoreMatch(wantedTitle, foundTitle) {
   const wanted = normalize(wantedTitle);
-  const found = normalize(amazonTitle);
+  const found = normalize(foundTitle);
 
   if (!wanted || !found) return 0;
 
-  if (found === wanted) return 100;
+  if (wanted === found) return 100;
 
   if (found.includes(wanted)) return 95;
 
@@ -60,32 +55,27 @@ function matchScore(wantedTitle, amazonTitle) {
     .split(" ")
     .filter((word) => word.length > 2);
 
-  const foundWords = new Set(
-    found.split(" ")
-  );
+  const foundWords = new Set(found.split(" "));
 
-  if (!wantedWords.length) return 0;
-
-  let matches = 0;
+  let matched = 0;
 
   for (const word of wantedWords) {
     if (foundWords.has(word)) {
-      matches++;
+      matched++;
     }
   }
 
-  return (
-    matches / wantedWords.length
-  ) * 100;
+  if (!wantedWords.length) return 0;
+
+  return (matched / wantedWords.length) * 100;
 }
 
-async function amazonSearch(query) {
-  const searchUrl =
-    "https://www.amazon.pl/s?k=" +
-    encodeURIComponent(query) +
-    "&i=stripbooks";
+async function searchAllegro(query) {
+  const url =
+    "https://allegro.pl/listing?string=" +
+    encodeURIComponent(`"${query}"`);
 
-  const response = await fetch(searchUrl, {
+  const response = await fetch(url, {
     cache: "no-store",
 
     headers: {
@@ -95,7 +85,7 @@ async function amazonSearch(query) {
         "Chrome/140.0.0.0 Safari/537.36",
 
       "Accept-Language":
-        "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+        "pl-PL,pl;q=0.9,en;q=0.8",
 
       Accept:
         "text/html,application/xhtml+xml," +
@@ -105,134 +95,117 @@ async function amazonSearch(query) {
 
   if (!response.ok) {
     throw new Error(
-      `Amazon HTTP ${response.status}`
+      `Allegro HTTP ${response.status}`
     );
   }
 
-  const buffer =
-    await response.arrayBuffer();
-
-  const html =
-    new TextDecoder("utf-8").decode(
-      buffer
-    );
-
-  if (
-    html.includes(
-      "Enter the characters you see below"
-    ) ||
-    html.includes("Wprowadź znaki") ||
-    html.includes(
-      "api-services-support@amazon.com"
-    )
-  ) {
-    throw new Error("Amazon CAPTCHA");
-  }
-
-  const blocks =
-    html.match(
-      /<div[^>]+data-component-type=["']s-search-result["'][\s\S]*?(?=<div[^>]+data-component-type=["']s-search-result["']|$)/gi
-    ) || [];
+  const html = await response.text();
 
   const results = [];
 
-  for (const block of blocks) {
-    const asinMatch = block.match(
-      /data-asin=["']([A-Z0-9]{10})["']/i
+  /*
+    Allegro zmienia HTML dość często.
+    Na początek wyciągamy linki ofert i tekst
+    w ich najbliższym otoczeniu.
+  */
+
+  const linkRegex =
+    /<a[^>]+href="(https:\/\/allegro\.pl\/oferta\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+  let match;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    const url = match[1];
+
+    const title = cleanText(match[2]);
+
+    if (!title || title.length < 3) {
+      continue;
+    }
+
+    const around = html.slice(
+      Math.max(0, match.index - 1500),
+      Math.min(
+        html.length,
+        match.index + match[0].length + 2500
+      )
     );
 
-    if (!asinMatch) continue;
-
-    const titleMatch =
-      block.match(
-        /<h2[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i
-      ) ||
-      block.match(
-        /<span[^>]+class=["'][^"']*a-size-medium[^"']*["'][^>]*>([\s\S]*?)<\/span>/i
-      );
-
-    if (!titleMatch) continue;
-
-    const amazonTitle =
-      cleanText(titleMatch[1]);
-
-    const priceMatch =
-      block.match(
-        /<span[^>]+class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)<\/span>/i
-      );
+    const priceMatches =
+      around.match(
+        /\d[\d\s]*[,.]\d{2}\s*zł/g
+      ) || [];
 
     const rawPrice =
-      priceMatch
-        ? cleanText(priceMatch[1])
+      priceMatches.length
+        ? priceMatches[0]
         : null;
 
-    const imageMatch =
-      block.match(
-        /<img[^>]+class=["'][^"']*s-image[^"']*["'][^>]+src=["']([^"']+)["']/i
-      );
-
     results.push({
-      asin: asinMatch[1],
-
-      amazonTitle,
-
+      source: "allegro",
+      title,
       price: parsePrice(rawPrice),
-
       rawPrice,
-
       currency: "PLN",
-
-      image:
-        imageMatch?.[1] || null,
-
-      url:
-        `https://www.amazon.pl/dp/${asinMatch[1]}`,
+      url,
     });
+
+    if (results.length >= 30) {
+      break;
+    }
   }
 
-  return results;
+  // usuwamy duplikaty linków
+  const unique = new Map();
+
+  for (const item of results) {
+    if (!unique.has(item.url)) {
+      unique.set(item.url, item);
+    }
+  }
+
+  return [...unique.values()];
 }
 
 async function findBook(book) {
-  // Najpierw używamy angielskiego tytułu.
-  // Jest bardziej niezawodny dla Black Library.
   const queries = [
-    `${book.originalTitle} Black Library`,
-    `${book.originalTitle} Warhammer`,
     book.originalTitle,
-  ];
+    book.polishTitle,
+  ].filter(Boolean);
 
-  if (
-    book.polishTitle &&
-    book.polishTitle !== book.originalTitle
-  ) {
-    queries.push(book.polishTitle);
-  }
-
+  let best = null;
+  let bestScore = 0;
   let debug = [];
 
   for (const query of queries) {
     const results =
-      await amazonSearch(query);
+      await searchAllegro(query);
 
     debug.push({
       query,
       resultCount: results.length,
-      sample:
-        results.slice(0, 3).map((r) => ({
-          asin: r.asin,
-          title: r.amazonTitle,
+      sample: results
+        .slice(0, 5)
+        .map((r) => ({
+          title: r.title,
           price: r.price,
+          url: r.url,
         })),
     });
 
-    let best = null;
-    let bestScore = 0;
-
     for (const result of results) {
-      const score = matchScore(
-        book.originalTitle,
-        result.amazonTitle
+      const score = Math.max(
+        scoreMatch(
+          book.originalTitle,
+          result.title
+        ),
+
+        book.polishTitle
+          ? scoreMatch(
+              book.polishTitle,
+              result.title
+            )
+          : 0
       );
 
       if (score > bestScore) {
@@ -241,40 +214,26 @@ async function findBook(book) {
       }
     }
 
-    // 70% zgodności słów wystarczy
-    if (best && bestScore >= 70) {
-      return {
-        ...book,
-
-        found: true,
-
-        searchedFor: query,
-
-        matchScore:
-          Math.round(bestScore),
-
-        ...best,
-
-        debug,
-      };
+    if (bestScore >= 70) {
+      break;
     }
+  }
 
-    await sleep(800);
+  if (!best || bestScore < 70) {
+    return {
+      ...book,
+      found: false,
+      source: "allegro",
+      debug,
+    };
   }
 
   return {
     ...book,
-
-    found: false,
-
-    asin: null,
-    amazonTitle: null,
-    price: null,
-    rawPrice: null,
-    currency: "PLN",
-    image: null,
-    url: null,
-
+    found: true,
+    source: "allegro",
+    matchScore: Math.round(bestScore),
+    offer: best,
     debug,
   };
 }
@@ -289,7 +248,7 @@ export async function GET(request) {
     );
 
     let limit = Number(
-      searchParams.get("limit") || 3
+      searchParams.get("limit") || 1
     );
 
     if (
@@ -303,50 +262,39 @@ export async function GET(request) {
       !Number.isInteger(limit) ||
       limit < 1
     ) {
-      limit = 3;
+      limit = 1;
     }
 
-    // Na razie max 5 podczas testów
-    limit = Math.min(limit, 5);
+    // na czas testów
+    limit = Math.min(limit, 3);
 
-    const selected =
-      BOOKS.slice(
-        offset,
-        offset + limit
-      );
+    const selected = BOOKS.slice(
+      offset,
+      offset + limit
+    );
 
     const books = [];
 
     for (const book of selected) {
       try {
-        const result =
-          await findBook(book);
-
-        books.push(result);
+        books.push(
+          await findBook(book)
+        );
       } catch (error) {
         books.push({
           ...book,
           found: false,
+          source: "allegro",
           error: error.message,
         });
-
-        if (
-          error.message ===
-          "Amazon CAPTCHA"
-        ) {
-          break;
-        }
       }
-
-      await sleep(1000);
     }
 
-    const nextOffset =
-      offset + books.length;
-
-    const body = JSON.stringify({
+    const body = {
       updatedAt:
         new Date().toISOString(),
+
+      source: "allegro",
 
       totalBooks: BOOKS.length,
 
@@ -354,46 +302,33 @@ export async function GET(request) {
 
       processed: books.length,
 
-      found:
-        books.filter(
-          (book) => book.found
-        ).length,
-
-      nextOffset:
-        nextOffset <
-        BOOKS.length
-          ? nextOffset
-          : null,
-
-      finished:
-        nextOffset >=
-        BOOKS.length,
+      found: books.filter(
+        (book) => book.found
+      ).length,
 
       books,
-    });
+    };
 
-    return new Response(body, {
-      status: 200,
+    return new Response(
+      JSON.stringify(body),
+      {
+        headers: {
+          "Content-Type":
+            "application/json; charset=utf-8",
 
-      headers: {
-        "Content-Type":
-          "application/json; charset=utf-8",
+          "Access-Control-Allow-Origin":
+            "*",
 
-        "Access-Control-Allow-Origin":
-          "*",
-
-        "Cache-Control":
-          "no-store",
-      },
-    });
+          "Cache-Control":
+            "no-store",
+        },
+      }
+    );
   } catch (error) {
     return new Response(
       JSON.stringify({
-        error:
-          "Amazon search failed",
-
-        details:
-          error.message,
+        error: "Allegro search failed",
+        details: error.message,
       }),
       {
         status: 500,
@@ -401,9 +336,6 @@ export async function GET(request) {
         headers: {
           "Content-Type":
             "application/json; charset=utf-8",
-
-          "Access-Control-Allow-Origin":
-            "*",
         },
       }
     );
