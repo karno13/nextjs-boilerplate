@@ -1,56 +1,392 @@
+import { BOOKS } from "../../../lib/books.js";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+function cleanText(value = "") {
+  return value
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalize(value = "") {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parsePrice(value) {
+  if (!value) return null;
+
+  const match = value.match(
+    /(\d[\d\s]*[,.]\d{2}|\d+)/
+  );
+
+  if (!match) return null;
+
+  const cleaned = match[1]
+    .replace(/\s/g, "")
+    .replace(",", ".");
+
+  const number = Number(cleaned);
+
+  return Number.isFinite(number)
+    ? number
+    : null;
+}
+
+function scoreMatch(wanted, found) {
+  const a = normalize(wanted);
+  const b = normalize(found);
+
+  if (!a || !b) return 0;
+
+  if (a === b) return 100;
+  if (b.includes(a)) return 95;
+
+  const words = a
+    .split(" ")
+    .filter((word) => word.length > 2);
+
+  const foundWords =
+    new Set(b.split(" "));
+
+  if (!words.length) return 0;
+
+  let matches = 0;
+
+  for (const word of words) {
+    if (foundWords.has(word)) {
+      matches++;
+    }
+  }
+
+  return (matches / words.length) * 100;
+}
+
+async function searchLokalnie(query) {
+  const url =
+    "https://allegrolokalnie.pl/oferty/q/" +
+    encodeURIComponent(query);
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/140.0.0.0 Safari/537.36",
+
+      "Accept-Language":
+        "pl-PL,pl;q=0.9,en;q=0.8",
+
+      Accept:
+        "text/html,application/xhtml+xml," +
+        "application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Allegro Lokalnie HTTP ${response.status}`
+    );
+  }
+
+  const html = await response.text();
+
+  const results = [];
+
+  /*
+    Szukamy linków do ofert.
+    Allegro Lokalnie część danych trzyma
+    bezpośrednio w HTML/JSON strony.
+  */
+
+  const linkRegex =
+    /href=["'](\/oferta\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+
+  let match;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    const relativeUrl = match[1];
+    const anchorHtml = match[2];
+
+    const title = cleanText(anchorHtml);
+
+    if (!title || title.length < 3) {
+      continue;
+    }
+
+    const around = html.slice(
+      Math.max(0, match.index - 2500),
+      Math.min(
+        html.length,
+        match.index + match[0].length + 3500
+      )
+    );
+
+    const priceMatch =
+      around.match(
+        /(\d[\d\s]*[,.]\d{2})\s*zł/i
+      );
+
+    const rawPrice =
+      priceMatch?.[0] || null;
+
+    const imageMatch =
+      around.match(
+        /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
+      );
+
+    results.push({
+      source: "allegro_lokalnie",
+
+      title,
+
+      price:
+        parsePrice(rawPrice),
+
+      rawPrice,
+
+      currency: "PLN",
+
+      image:
+        imageMatch?.[1] || null,
+
+      url:
+        "https://allegrolokalnie.pl" +
+        relativeUrl,
+    });
+
+    if (results.length >= 50) {
+      break;
+    }
+  }
+
+  const unique = new Map();
+
+  for (const result of results) {
+    if (!unique.has(result.url)) {
+      unique.set(
+        result.url,
+        result
+      );
+    }
+  }
+
+  return [...unique.values()];
+}
+
+async function findBook(book) {
+  const queries = [
+    book.originalTitle,
+    book.polishTitle,
+  ].filter(Boolean);
+
+  const allOffers = [];
+
+  for (const query of queries) {
+    const results =
+      await searchLokalnie(query);
+
+    for (const result of results) {
+      const score = Math.max(
+        scoreMatch(
+          book.originalTitle,
+          result.title
+        ),
+
+        book.polishTitle
+          ? scoreMatch(
+              book.polishTitle,
+              result.title
+            )
+          : 0
+      );
+
+      if (score >= 60) {
+        allOffers.push({
+          ...result,
+          matchScore:
+            Math.round(score),
+        });
+      }
+    }
+  }
+
+  const uniqueOffers =
+    new Map();
+
+  for (const offer of allOffers) {
+    if (
+      !uniqueOffers.has(
+        offer.url
+      )
+    ) {
+      uniqueOffers.set(
+        offer.url,
+        offer
+      );
+    }
+  }
+
+  const offers =
+    [...uniqueOffers.values()]
+      .sort((a, b) => {
+        if (
+          a.price == null &&
+          b.price == null
+        ) {
+          return 0;
+        }
+
+        if (a.price == null) return 1;
+        if (b.price == null) return -1;
+
+        return a.price - b.price;
+      });
+
+  return {
+    ...book,
+
+    found:
+      offers.length > 0,
+
+    source:
+      "allegro_lokalnie",
+
+    offerCount:
+      offers.length,
+
+    lowestPrice:
+      offers.find(
+        (o) => o.price != null
+      )?.price ?? null,
+
+    offers:
+      offers.slice(0, 20),
+  };
+}
+
+export async function GET(request) {
   try {
-    const query = "Horus Rising";
+    const { searchParams } =
+      new URL(request.url);
 
-    const url =
-      "https://allegrolokalnie.pl/oferty/q/" +
-      encodeURIComponent(query);
+    let offset = Number(
+      searchParams.get("offset") || 0
+    );
 
-    const response = await fetch(url, {
-      cache: "no-store",
+    let limit = Number(
+      searchParams.get("limit") || 1
+    );
 
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-          "AppleWebKit/537.36 (KHTML, like Gecko) " +
-          "Chrome/140.0.0.0 Safari/537.36",
+    if (
+      !Number.isInteger(offset) ||
+      offset < 0
+    ) {
+      offset = 0;
+    }
 
-        "Accept-Language":
-          "pl-PL,pl;q=0.9,en;q=0.8",
+    if (
+      !Number.isInteger(limit) ||
+      limit < 1
+    ) {
+      limit = 1;
+    }
 
-        Accept:
-          "text/html,application/xhtml+xml," +
-          "application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
+    limit = Math.min(limit, 3);
 
-    const html = await response.text();
+    const selected =
+      BOOKS.slice(
+        offset,
+        offset + limit
+      );
 
-    return Response.json({
-      ok: response.ok,
-      status: response.status,
-      query,
-      url,
+    const books = [];
 
-      htmlLength: html.length,
+    for (const book of selected) {
+      try {
+        books.push(
+          await findBook(book)
+        );
+      } catch (error) {
+        books.push({
+          ...book,
+          found: false,
+          source:
+            "allegro_lokalnie",
+          error:
+            error.message,
+        });
+      }
+    }
 
-      containsHorus:
-        html.toLowerCase().includes("horus"),
+    return new Response(
+      JSON.stringify({
+        updatedAt:
+          new Date().toISOString(),
 
-      preview:
-        html.slice(0, 1000),
-    });
+        source:
+          "allegro_lokalnie",
+
+        totalBooks:
+          BOOKS.length,
+
+        offset,
+
+        processed:
+          books.length,
+
+        found:
+          books.filter(
+            (b) => b.found
+          ).length,
+
+        books,
+      }),
+
+      {
+        headers: {
+          "Content-Type":
+            "application/json; charset=utf-8",
+
+          "Access-Control-Allow-Origin":
+            "*",
+
+          "Cache-Control":
+            "no-store",
+        },
+      }
+    );
 
   } catch (error) {
-    return Response.json(
-      {
-        error: error.message,
-      },
+    return new Response(
+      JSON.stringify({
+        error:
+          "Allegro Lokalnie search failed",
+
+        details:
+          error.message,
+      }),
+
       {
         status: 500,
+
+        headers: {
+          "Content-Type":
+            "application/json; charset=utf-8",
+        },
       }
     );
   }
