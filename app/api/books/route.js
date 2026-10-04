@@ -6,10 +6,25 @@ export const dynamic = "force-dynamic";
 const sleep = (ms) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+const HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/140.0.0.0 Safari/537.36",
+
+  "Accept-Language":
+    "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+
+  Accept:
+    "text/html,application/xhtml+xml," +
+    "application/xml;q=0.9,*/*;q=0.8",
+};
+
 function cleanText(value = "") {
   return value
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
+    .replace(/&#160;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, '"')
@@ -61,11 +76,11 @@ function parsePrice(value) {
 
   if (!match) return null;
 
-  const cleaned = match[1]
-    .replace(/\s/g, "")
-    .replace(",", ".");
-
-  const number = Number(cleaned);
+  const number = Number(
+    match[1]
+      .replace(/\s/g, "")
+      .replace(",", ".")
+  );
 
   return Number.isFinite(number)
     ? number
@@ -108,28 +123,66 @@ function scoreMatch(wanted, found) {
   ) * 100;
 }
 
-/*
-  =========================
-  ALLEGRO LOKALNIE
-  =========================
-*/
-
-function allegroOfferScore(book, result) {
-  const text = normalize(result.title);
-
-  let score = Math.max(
+function bestBookScore(book, title) {
+  return Math.max(
     scoreMatch(
       book.originalTitle,
-      result.title
+      title
     ),
 
     book.polishTitle
       ? scoreMatch(
           book.polishTitle,
-          result.title
+          title
         )
       : 0
   );
+}
+
+async function fetchHtml(url) {
+  const response = await fetch(url, {
+    next: {
+      revalidate: 3600,
+    },
+
+    headers: HEADERS,
+
+    redirect: "follow",
+  });
+
+  if (response.status === 429) {
+    throw new Error(
+      "RATE_LIMITED"
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status}`
+    );
+  }
+
+  return await response.text();
+}
+
+/*
+  ============================================
+  ALLEGRO LOKALNIE
+  ============================================
+*/
+
+function allegroOfferScore(
+  book,
+  result
+) {
+  const text =
+    normalize(result.title);
+
+  let score =
+    bestBookScore(
+      book,
+      result.title
+    );
 
   const bonusWords = [
     "warhammer",
@@ -144,7 +197,9 @@ function allegroOfferScore(book, result) {
 
   for (const word of bonusWords) {
     if (
-      text.includes(normalize(word))
+      text.includes(
+        normalize(word)
+      )
     ) {
       score += 10;
     }
@@ -157,15 +212,13 @@ function allegroOfferScore(book, result) {
     "monety",
     "booster",
     "boostery",
-    "karta pokemon",
-    "karty pokemon",
+    "pokemon",
     "lego",
     "koszulka",
     "plakat",
     "kubek",
     "brelok",
     "naklejka",
-    "naklejki",
     "puzzle",
     "figurka",
     "figurki",
@@ -174,27 +227,11 @@ function allegroOfferScore(book, result) {
 
   for (const word of badWords) {
     if (
-      text.includes(normalize(word))
+      text.includes(
+        normalize(word)
+      )
     ) {
       score -= 60;
-    }
-  }
-
-  const softBadWords = [
-    "gra planszowa",
-    "podrecznik",
-    "codex",
-    "kodeks",
-    "dice",
-    "kostki",
-    "model",
-  ];
-
-  for (const word of softBadWords) {
-    if (
-      text.includes(normalize(word))
-    ) {
-      score -= 20;
     }
   }
 
@@ -211,29 +248,12 @@ async function searchLokalnie(query) {
       revalidate: 3600,
     },
 
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/140.0.0.0 Safari/537.36",
-
-      "Accept-Language":
-        "pl-PL,pl;q=0.9,en;q=0.8",
-
-      Accept:
-        "text/html,application/xhtml+xml," +
-        "application/xml;q=0.9,*/*;q=0.8",
-    },
+    headers: HEADERS,
   });
 
   if (response.status === 429) {
-    const retryAfter =
-      response.headers.get("retry-after");
-
     throw new Error(
-      retryAfter
-        ? `RATE_LIMITED - retry after ${retryAfter}s`
-        : "RATE_LIMITED"
+      "RATE_LIMITED"
     );
   }
 
@@ -254,7 +274,8 @@ async function searchLokalnie(query) {
   let match;
 
   while (
-    (match = linkRegex.exec(html)) !== null
+    (match =
+      linkRegex.exec(html)) !== null
   ) {
     const relativeUrl =
       match[1];
@@ -292,16 +313,17 @@ async function searchLokalnie(query) {
         );
     }
 
-    const rawPrice =
-      priceMatch?.[0] || null;
-
     const price =
       priceMatch?.[1]
-        ? parsePrice(priceMatch[1])
-        : parsePrice(rawPrice);
+        ? parsePrice(
+            priceMatch[1]
+          )
+        : null;
 
     const title =
-      cleanOfferTitle(anchorHtml);
+      cleanOfferTitle(
+        anchorHtml
+      );
 
     if (
       !title ||
@@ -326,13 +348,16 @@ async function searchLokalnie(query) {
 
       price,
 
-      rawPrice,
+      rawPrice:
+        priceMatch?.[0] ||
+        null,
 
       currency:
         "PLN",
 
       image:
-        imageMatch?.[1] || null,
+        imageMatch?.[1] ||
+        null,
 
       url:
         "https://allegrolokalnie.pl" +
@@ -346,10 +371,15 @@ async function searchLokalnie(query) {
     }
   }
 
-  const unique = new Map();
+  const unique =
+    new Map();
 
   for (const result of results) {
-    if (!unique.has(result.url)) {
+    if (
+      !unique.has(
+        result.url
+      )
+    ) {
       unique.set(
         result.url,
         result
@@ -363,163 +393,100 @@ async function searchLokalnie(query) {
 }
 
 /*
-  =========================
+  ============================================
   HEGEMON
-  =========================
+  ============================================
 */
-
-/*
-  Hegemon ma 369 produktów i paginację.
-  Nie odpytujemy osobno każdego tytułu.
-
-  Pobieramy strony kategorii,
-  a następnie dopasowujemy książkę
-  do pobranego katalogu.
-*/
-
-async function fetchHegemonPage(page = 1) {
-  const baseUrl =
-    "https://hegemonshop.com/pl/314-black-library";
-
-  const url =
-    page === 1
-      ? baseUrl
-      : `${baseUrl}?page=${page}`;
-
-  const response = await fetch(url, {
-    next: {
-      revalidate: 3600,
-    },
-
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/140.0.0.0 Safari/537.36",
-
-      "Accept-Language":
-        "pl-PL,pl;q=0.9,en;q=0.8",
-
-      Accept:
-        "text/html,application/xhtml+xml," +
-        "application/xml;q=0.9,*/*;q=0.8",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Hegemon HTTP ${response.status}`
-    );
-  }
-
-  return await response.text();
-}
 
 function parseHegemonPage(html) {
   const products = [];
 
   /*
-    Hegemon/PrestaShop trzyma produkty
-    w kontenerach article.product-miniature.
+    Zamiast wycinać całe <article>,
+    szukamy wszystkich tytułów produktów.
+
+    To powinno zebrać pełne 36 pozycji
+    na stronie.
   */
 
-  const productBlocks =
-    html.match(
-      /<article[^>]+class=["'][^"']*product-miniature[^"']*["'][\s\S]*?<\/article>/gi
-    ) || [];
+  const titleRegex =
+    /<h2[^>]*class=["'][^"']*product-title[^"']*["'][^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
-  for (const block of productBlocks) {
-    let title = null;
-    let url = null;
+  let match;
 
-    const titleLink =
-      block.match(
-        /<h2[^>]*class=["'][^"']*product-title[^"']*["'][^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
-      ) ||
-      block.match(
-        /<a[^>]+href=["']([^"']+)["'][^>]*class=["'][^"']*product-thumbnail[^"']*["'][^>]*>[\s\S]*?<\/a>[\s\S]*?<h2[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i
-      );
+  while (
+    (match =
+      titleRegex.exec(html)) !== null
+  ) {
+    const url =
+      match[1];
 
-    if (titleLink) {
-      url =
-        titleLink[1] || null;
+    const title =
+      cleanText(match[2]);
 
-      title =
-        cleanText(
-          titleLink[2] || ""
-        );
-    }
+    if (!title) continue;
 
     /*
-      Awaryjny parser tytułu.
+      Bierzemy fragment strony wokół
+      konkretnego tytułu produktu.
     */
 
-    if (!title) {
-      const fallbackTitle =
-        block.match(
-          /<h2[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
-        );
+    const around =
+      html.slice(
+        Math.max(
+          0,
+          match.index - 1800
+        ),
 
-      if (fallbackTitle) {
-        url =
-          fallbackTitle[1];
-
-        title =
-          cleanText(
-            fallbackTitle[2]
-          );
-      }
-    }
-
-    if (!title) {
-      continue;
-    }
+        Math.min(
+          html.length,
+          match.index + 3500
+        )
+      );
 
     const priceMatch =
-      block.match(
-        /(?:class=["'][^"']*(?:price|product-price)[^"']*["'][^>]*>[\s\S]*?)?(\d[\d\s]*[,.]\d{2})\s*(?:&nbsp;|\u00a0|\s)*zł/i
+      around.match(
+        /(\d[\d\s]*[,.]\d{2})\s*(?:&nbsp;|&#160;|\s|\u00a0)*zł/i
+      );
+
+    const stockMatch =
+      around.match(
+        /Na stanie\s*:?\s*(\d+)\s*szt/i
+      );
+
+    const imageMatch =
+      around.match(
+        /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
       );
 
     const price =
       priceMatch
-        ? parsePrice(priceMatch[1])
+        ? parsePrice(
+            priceMatch[1]
+          )
         : null;
-
-    const rawPrice =
-      priceMatch?.[0]
-        ? cleanText(priceMatch[0])
-        : null;
-
-    const stockMatch =
-      block.match(
-        /Na stanie\s*:?\s*(\d+)\s*szt/i
-      );
 
     const stock =
       stockMatch
-        ? Number(stockMatch[1])
+        ? Number(
+            stockMatch[1]
+          )
         : null;
 
-    const imageMatch =
-      block.match(
-        /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
-      );
-
     products.push({
-      source:
-        "hegemon",
+      source: "hegemon",
 
-      condition:
-        "new",
+      condition: "new",
 
       title,
 
       price,
 
-      rawPrice,
+      rawPrice:
+        priceMatch?.[0] ||
+        null,
 
-      currency:
-        "PLN",
+      currency: "PLN",
 
       stock,
 
@@ -529,7 +496,8 @@ function parseHegemonPage(html) {
           : stock > 0,
 
       image:
-        imageMatch?.[1] || null,
+        imageMatch?.[1] ||
+        null,
 
       url,
     });
@@ -538,26 +506,60 @@ function parseHegemonPage(html) {
   return products;
 }
 
+function getHegemonPageCount(html) {
+  const match =
+    html.match(
+      /Jest\s+(\d+)\s+produkt/i
+    );
+
+  if (!match) {
+    return 11;
+  }
+
+  const total =
+    Number(match[1]);
+
+  if (!total) {
+    return 11;
+  }
+
+  return Math.ceil(
+    total / 36
+  );
+}
+
 async function getHegemonCatalog() {
-  const allProducts = [];
+  const base =
+    "https://hegemonshop.com/pl/314-black-library";
+
+  const firstHtml =
+    await fetchHtml(base);
+
+  const pageCount =
+    getHegemonPageCount(
+      firstHtml
+    );
+
+  const all = [
+    ...parseHegemonPage(
+      firstHtml
+    ),
+  ];
 
   /*
-    Hegemon pokazuje 36 produktów na stronie
-    i ma obecnie ok. 11 stron.
-
-    Na potrzeby pierwszego testu pobieramy
-    maksymalnie 11 stron.
+    Pierwsza strona już pobrana,
+    więc zaczynamy od 2.
   */
 
   for (
-    let page = 1;
-    page <= 11;
+    let page = 2;
+    page <= pageCount;
     page++
   ) {
     try {
       const html =
-        await fetchHegemonPage(
-          page
+        await fetchHtml(
+          `${base}?page=${page}`
         );
 
       const products =
@@ -565,14 +567,198 @@ async function getHegemonCatalog() {
           html
         );
 
-      allProducts.push(
+      all.push(
         ...products
       );
 
-      /*
-        Jeśli strona nic nie zwróciła,
-        dalszej paginacji nie ma sensu.
-      */
+      await sleep(120);
+
+    } catch (error) {
+      console.error(
+        `Hegemon page ${page}:`,
+        error.message
+      );
+    }
+  }
+
+  const unique =
+    new Map();
+
+  for (const item of all) {
+    const key =
+      item.url ||
+      normalize(item.title);
+
+    if (!unique.has(key)) {
+      unique.set(
+        key,
+        item
+      );
+    }
+  }
+
+  return [
+    ...unique.values(),
+  ];
+}
+
+/*
+  ============================================
+  MEGAKSIAZKI
+  ============================================
+*/
+
+function parseMegaPage(html) {
+  const products = [];
+
+  /*
+    Na MegaKsiazki tytuły produktów
+    występują jako <h2><a ...>.
+  */
+
+  const regex =
+    /<h2[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>/gi;
+
+  let match;
+
+  while (
+    (match =
+      regex.exec(html)) !== null
+  ) {
+    let url =
+      match[1];
+
+    const title =
+      cleanText(
+        match[2]
+      );
+
+    if (
+      !title ||
+      title.length < 2
+    ) {
+      continue;
+    }
+
+    if (
+      url.startsWith("/")
+    ) {
+      url =
+        "https://www.megaksiazki.pl" +
+        url;
+    }
+
+    const around =
+      html.slice(
+        match.index,
+
+        Math.min(
+          html.length,
+          match.index + 3000
+        )
+      );
+
+    const priceMatch =
+      around.match(
+        /(\d[\d\s]*[,.]\d{2})\s*zł/i
+      );
+
+    const price =
+      priceMatch
+        ? parsePrice(
+            priceMatch[1]
+          )
+        : null;
+
+    const available =
+      /W magazynie|Dostępne/i
+        .test(around);
+
+    const unavailable =
+      /niedostępny|niedostępne/i
+        .test(around);
+
+    const imageMatch =
+      around.match(
+        /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
+      );
+
+    products.push({
+      source:
+        "megaksiazki",
+
+      condition:
+        "new",
+
+      title,
+
+      price,
+
+      rawPrice:
+        priceMatch?.[0] ||
+        null,
+
+      currency:
+        "PLN",
+
+      available:
+        unavailable
+          ? false
+          : available
+            ? true
+            : null,
+
+      stock:
+        null,
+
+      image:
+        imageMatch?.[1] ||
+        null,
+
+      url,
+    });
+  }
+
+  return products;
+}
+
+async function getMegaCatalog() {
+  const base =
+    "https://www.megaksiazki.pl/3024-warhammer-40-000";
+
+  const all = [];
+
+  /*
+    MegaKsiazki ma bardzo dużo stron
+    katalogu.
+
+    Na tym etapie bierzemy pierwsze 8.
+    To około 160 produktów.
+
+    Dzięki temu request nie powinien
+    trwać absurdalnie długo.
+  */
+
+  const MAX_PAGES = 8;
+
+  for (
+    let page = 1;
+    page <= MAX_PAGES;
+    page++
+  ) {
+    try {
+      const url =
+        page === 1
+          ? base
+          : `${base}?p=${page}`;
+
+      const html =
+        await fetchHtml(url);
+
+      const products =
+        parseMegaPage(
+          html
+        );
 
       if (
         products.length === 0
@@ -580,16 +766,15 @@ async function getHegemonCatalog() {
         break;
       }
 
-      await sleep(150);
+      all.push(
+        ...products
+      );
+
+      await sleep(120);
 
     } catch (error) {
-      /*
-        Nie zabijamy całego endpointu,
-        jeśli np. strona 10 się nie uda.
-      */
-
       console.error(
-        `Hegemon page ${page}:`,
+        `MegaKsiazki page ${page}:`,
         error.message
       );
 
@@ -600,22 +785,17 @@ async function getHegemonCatalog() {
   const unique =
     new Map();
 
-  for (
-    const product
-    of allProducts
-  ) {
+  for (const item of all) {
     const key =
-      product.url ||
+      item.url ||
       normalize(
-        product.title
+        item.title
       );
 
-    if (
-      !unique.has(key)
-    ) {
+    if (!unique.has(key)) {
       unique.set(
         key,
-        product
+        item
       );
     }
   }
@@ -625,38 +805,29 @@ async function getHegemonCatalog() {
   ];
 }
 
-function findHegemonOffers(
+/*
+  ============================================
+  DOPASOWYWANIE KATALOGÓW
+  ============================================
+*/
+
+function findCatalogOffers(
   book,
-  catalog
+  catalog,
+  minimumScore = 65
 ) {
   const matches = [];
 
-  for (
-    const product
-    of catalog
-  ) {
+  for (const product of catalog) {
     const score =
-      Math.max(
-        scoreMatch(
-          book.originalTitle,
-          product.title
-        ),
-
-        book.polishTitle
-          ? scoreMatch(
-              book.polishTitle,
-              product.title
-            )
-          : 0
+      bestBookScore(
+        book,
+        product.title
       );
 
-    /*
-      W specjalistycznej kategorii
-      Black Library możemy być trochę
-      bardziej liberalni niż na Allegro.
-    */
-
-    if (score >= 65) {
+    if (
+      score >= minimumScore
+    ) {
       matches.push({
         ...product,
 
@@ -679,6 +850,13 @@ function findHegemonOffers(
       }
 
       if (
+        a.price == null &&
+        b.price == null
+      ) {
+        return 0;
+      }
+
+      if (
         a.price == null
       ) {
         return 1;
@@ -698,71 +876,82 @@ function findHegemonOffers(
     .slice(0, 10);
 }
 
+function cheapest(offers) {
+  return offers
+    .filter(
+      (item) =>
+        item.price != null
+    )
+    .sort(
+      (a, b) =>
+        a.price -
+        b.price
+    )[0] || null;
+}
+
 /*
-  =========================
+  ============================================
   ŁĄCZENIE ŹRÓDEŁ
-  =========================
+  ============================================
 */
 
 async function findBook(
   book,
-  hegemonCatalog
+  hegemonCatalog,
+  megaCatalog
 ) {
-  const query =
-    book.originalTitle;
+  /*
+    Allegro Lokalnie
+  */
 
   let allegroOffers = [];
   let allegroError = null;
 
   try {
-    const results =
+    const raw =
       await searchLokalnie(
-        query
+        book.originalTitle
       );
 
-    for (
-      const result
-      of results
-    ) {
+    for (const offer of raw) {
       const score =
         allegroOfferScore(
           book,
-          result
+          offer
         );
 
-      if (score >= 60) {
+      if (
+        score >= 60
+      ) {
         allegroOffers.push({
-          ...result,
+          ...offer,
 
           matchScore:
             score,
         });
       }
     }
+
   } catch (error) {
     allegroError =
       error.message;
   }
 
-  /*
-    Usuwamy duplikaty Allegro.
-  */
-
   const allegroUnique =
     new Map();
 
   for (
-    const offer
+    const item
     of allegroOffers
   ) {
     if (
       !allegroUnique.has(
-        offer.url
+        item.url
       )
     ) {
       allegroUnique.set(
-        offer.url,
-        offer
+        item.url,
+        item
       );
     }
   }
@@ -770,55 +959,73 @@ async function findBook(
   allegroOffers =
     [
       ...allegroUnique.values(),
-    ].sort((a, b) => {
-      if (
-        a.price == null
-      ) {
-        return 1;
-      }
+    ];
 
-      if (
-        b.price == null
-      ) {
-        return -1;
-      }
-
-      return (
-        a.price -
-        b.price
-      );
-    });
+  /*
+    Hegemon
+  */
 
   const hegemonOffers =
-    findHegemonOffers(
+    findCatalogOffers(
       book,
-      hegemonCatalog
+      hegemonCatalog,
+      65
+    );
+
+  /*
+    MegaKsiazki
+  */
+
+  const megaOffers =
+    findCatalogOffers(
+      book,
+      megaCatalog,
+      65
     );
 
   const cheapestAllegro =
-    allegroOffers.find(
-      (offer) =>
-        offer.price != null
+    cheapest(
+      allegroOffers
     );
 
   const cheapestHegemon =
-    [...hegemonOffers]
-      .filter(
-        (offer) =>
-          offer.price != null
-      )
+    cheapest(
+      hegemonOffers
+    );
+
+  const cheapestMega =
+    cheapest(
+      megaOffers
+    );
+
+  /*
+    Najtańsza NOWA oferta
+    spośród sklepów.
+  */
+
+  const newCandidates =
+    [
+      cheapestHegemon,
+      cheapestMega,
+    ]
+      .filter(Boolean)
       .sort(
         (a, b) =>
           a.price -
           b.price
-      )[0];
+      );
+
+  const bestNew =
+    newCandidates[0] ||
+    null;
 
   return {
     ...book,
 
     found:
       allegroOffers.length > 0 ||
-      hegemonOffers.length > 0,
+      hegemonOffers.length > 0 ||
+      megaOffers.length > 0,
 
     sources: {
       allegro_lokalnie: {
@@ -856,6 +1063,21 @@ async function findBook(
         offers:
           hegemonOffers,
       },
+
+      megaksiazki: {
+        found:
+          megaOffers.length > 0,
+
+        offerCount:
+          megaOffers.length,
+
+        lowestPrice:
+          cheapestMega?.price ??
+          null,
+
+        offers:
+          megaOffers,
+      },
     },
 
     bestUsedPrice:
@@ -863,20 +1085,26 @@ async function findBook(
       null,
 
     bestNewPrice:
-      cheapestHegemon?.price ??
+      bestNew?.price ??
+      null,
+
+    bestNewSource:
+      bestNew?.source ??
+      null,
+
+    bestNewUrl:
+      bestNew?.url ??
       null,
   };
 }
 
 /*
-  =========================
+  ============================================
   API
-  =========================
+  ============================================
 */
 
-export async function GET(
-  request
-) {
+export async function GET(request) {
   try {
     const {
       searchParams,
@@ -900,26 +1128,18 @@ export async function GET(
       );
 
     if (
-      !Number.isInteger(
-        offset
-      ) ||
+      !Number.isInteger(offset) ||
       offset < 0
     ) {
       offset = 0;
     }
 
     if (
-      !Number.isInteger(
-        limit
-      ) ||
+      !Number.isInteger(limit) ||
       limit < 1
     ) {
       limit = 1;
     }
-
-    /*
-      Na razie testujemy małe partie.
-    */
 
     limit =
       Math.min(
@@ -928,13 +1148,18 @@ export async function GET(
       );
 
     /*
-      Katalog Hegemon pobieramy raz
-      dla całego requestu,
-      a nie osobno dla każdej książki.
+      Oba katalogi sklepowe pobieramy
+      tylko raz na cały request.
     */
 
-    const hegemonCatalog =
-      await getHegemonCatalog();
+    const [
+      hegemonCatalog,
+      megaCatalog,
+    ] =
+      await Promise.all([
+        getHegemonCatalog(),
+        getMegaCatalog(),
+      ]);
 
     const selected =
       BOOKS.slice(
@@ -951,7 +1176,8 @@ export async function GET(
       const result =
         await findBook(
           book,
-          hegemonCatalog
+          hegemonCatalog,
+          megaCatalog
         );
 
       books.push(
@@ -959,8 +1185,8 @@ export async function GET(
       );
 
       /*
-        Allegro Lokalnie jest źródłem,
-        przy którym mieliśmy 429.
+        Tylko Allegro Lokalnie
+        generuje wyszukiwanie per książka.
       */
 
       await sleep(800);
@@ -980,13 +1206,19 @@ export async function GET(
           sources: [
             "allegro_lokalnie",
             "hegemon",
+            "megaksiazki",
           ],
 
           totalBooks:
             BOOKS.length,
 
-          hegemonCatalogSize:
-            hegemonCatalog.length,
+          catalogStats: {
+            hegemon:
+              hegemonCatalog.length,
+
+            megaksiazki:
+              megaCatalog.length,
+          },
 
           offset,
 
@@ -1040,8 +1272,7 @@ export async function GET(
       }),
 
       {
-        status:
-          500,
+        status: 500,
 
         headers: {
           "Content-Type":
