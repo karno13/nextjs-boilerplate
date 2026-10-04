@@ -93,7 +93,9 @@ function scoreMatch(wanted, found) {
 
   if (!a || !b) return 0;
 
-  if (a === b) return 100;
+  if (a === b) {
+    return 100;
+  }
 
   if (b.includes(a)) {
     return 95;
@@ -401,14 +403,6 @@ async function searchLokalnie(query) {
 function parseHegemonPage(html) {
   const products = [];
 
-  /*
-    Zamiast wycinać całe <article>,
-    szukamy wszystkich tytułów produktów.
-
-    To powinno zebrać pełne 36 pozycji
-    na stronie.
-  */
-
   const titleRegex =
     /<h2[^>]*class=["'][^"']*product-title[^"']*["'][^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
@@ -425,11 +419,6 @@ function parseHegemonPage(html) {
       cleanText(match[2]);
 
     if (!title) continue;
-
-    /*
-      Bierzemy fragment strony wokół
-      konkretnego tytułu produktu.
-    */
 
     const around =
       html.slice(
@@ -474,9 +463,11 @@ function parseHegemonPage(html) {
         : null;
 
     products.push({
-      source: "hegemon",
+      source:
+        "hegemon",
 
-      condition: "new",
+      condition:
+        "new",
 
       title,
 
@@ -486,7 +477,8 @@ function parseHegemonPage(html) {
         priceMatch?.[0] ||
         null,
 
-      currency: "PLN",
+      currency:
+        "PLN",
 
       stock,
 
@@ -507,25 +499,41 @@ function parseHegemonPage(html) {
 }
 
 function getHegemonPageCount(html) {
-  const match =
-    html.match(
-      /Jest\s+(\d+)\s+produkt/i
-    );
+  /*
+    Próbujemy kilku wariantów,
+    bo licznik może się różnić.
+  */
 
-  if (!match) {
-    return 11;
+  const patterns = [
+    /Jest\s+(\d+)\s+produkt/i,
+    /(\d+)\s+produktów/i,
+    /(\d+)\s+produkty/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match =
+      html.match(pattern);
+
+    if (match) {
+      const total =
+        Number(match[1]);
+
+      if (
+        Number.isFinite(total) &&
+        total > 0
+      ) {
+        return Math.ceil(
+          total / 36
+        );
+      }
+    }
   }
 
-  const total =
-    Number(match[1]);
+  /*
+    Awaryjnie 12 stron.
+  */
 
-  if (!total) {
-    return 11;
-  }
-
-  return Math.ceil(
-    total / 36
-  );
+  return 12;
 }
 
 async function getHegemonCatalog() {
@@ -545,11 +553,6 @@ async function getHegemonCatalog() {
       firstHtml
     ),
   ];
-
-  /*
-    Pierwsza strona już pobrana,
-    więc zaczynamy od 2.
-  */
 
   for (
     let page = 2;
@@ -587,9 +590,13 @@ async function getHegemonCatalog() {
   for (const item of all) {
     const key =
       item.url ||
-      normalize(item.title);
+      normalize(
+        item.title
+      );
 
-    if (!unique.has(key)) {
+    if (
+      !unique.has(key)
+    ) {
       unique.set(
         key,
         item
@@ -612,55 +619,124 @@ function parseMegaPage(html) {
   const products = [];
 
   /*
-    Na MegaKsiazki tytuły produktów
-    występują jako <h2><a ...>.
+    MegaKsiazki ma linki do produktów
+    w formie pełnych adresów .html.
   */
 
-  const regex =
-    /<h2[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>/gi;
+  const linkRegex =
+    /<a[^>]+href=["'](https:\/\/www\.megaksiazki\.pl\/[^"']+\.html(?:\?[^"']*)?)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
   let match;
 
   while (
     (match =
-      regex.exec(html)) !== null
+      linkRegex.exec(html)) !== null
   ) {
     let url =
       match[1];
 
-    const title =
-      cleanText(
-        match[2]
-      );
+    /*
+      Ignorujemy oczywiste linki
+      niebędące produktami.
+    */
 
     if (
-      !title ||
-      title.length < 2
+      url.includes("/blog") ||
+      url.includes("/kontakt") ||
+      url.includes("/koszyk") ||
+      url.includes("/regulamin") ||
+      url.includes("/pomoc")
     ) {
       continue;
     }
 
-    if (
-      url.startsWith("/")
-    ) {
-      url =
-        "https://www.megaksiazki.pl" +
-        url;
-    }
+    /*
+      Usuwamy parametry typu cat_pos.
+    */
+
+    url =
+      url.split("?")[0];
+
+    const anchorHtml =
+      match[2];
 
     const around =
       html.slice(
-        match.index,
+        Math.max(
+          0,
+          match.index - 1800
+        ),
 
         Math.min(
           html.length,
-          match.index + 3000
+          match.index +
+            match[0].length +
+            3000
         )
       );
 
+    let title =
+      cleanText(
+        anchorHtml
+      );
+
+    /*
+      Część linków zawiera tylko obraz.
+      Wtedy bierzemy title="".
+    */
+
+    if (
+      !title ||
+      title.length < 3
+    ) {
+      const titleAttr =
+        match[0].match(
+          /title=["']([^"']+)["']/i
+        );
+
+      if (titleAttr) {
+        title =
+          cleanText(
+            titleAttr[1]
+          );
+      }
+    }
+
+    /*
+      Potem alt="" obrazka.
+    */
+
+    if (
+      !title ||
+      title.length < 3
+    ) {
+      const altMatch =
+        around.match(
+          /<img[^>]+alt=["']([^"']+)["']/i
+        );
+
+      if (altMatch) {
+        title =
+          cleanText(
+            altMatch[1]
+          );
+      }
+    }
+
+    if (
+      !title ||
+      title.length < 3
+    ) {
+      continue;
+    }
+
+    /*
+      Cena.
+    */
+
     const priceMatch =
       around.match(
-        /(\d[\d\s]*[,.]\d{2})\s*zł/i
+        /(\d[\d\s]*[,.]\d{2})\s*(?:&nbsp;|&#160;|\s|\u00a0)*zł/i
       );
 
     const price =
@@ -670,18 +746,111 @@ function parseMegaPage(html) {
           )
         : null;
 
-    const available =
-      /W magazynie|Dostępne/i
-        .test(around);
+    /*
+      Dostępność.
+    */
 
-    const unavailable =
-      /niedostępny|niedostępne/i
-        .test(around);
+    let available =
+      null;
+
+    if (
+      /W magazynie|Towar w magazynie|Dostępne|Wysyłka od|wysyłamy/i.test(
+        around
+      )
+    ) {
+      available =
+        true;
+    }
+
+    if (
+      /Brak w magazynie|Produkt jest obecnie niedostępny|niedostępny|brak produktu/i.test(
+        around
+      )
+    ) {
+      available =
+        false;
+    }
+
+    /*
+      Zdjęcie.
+    */
 
     const imageMatch =
       around.match(
         /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
       );
+
+    let image =
+      imageMatch?.[1] ||
+      null;
+
+    if (
+      image &&
+      image.startsWith("//")
+    ) {
+      image =
+        "https:" + image;
+    }
+
+    if (
+      image &&
+      image.startsWith("/")
+    ) {
+      image =
+        "https://www.megaksiazki.pl" +
+        image;
+    }
+
+    /*
+      Lekki filtr jakości.
+      Nie wymaga słowa Warhammer,
+      ale eliminuje część nawigacji.
+    */
+
+    const context =
+      normalize(
+        title +
+        " " +
+        cleanText(around)
+      );
+
+    const looksLikeRelevantBook =
+      context.includes(
+        "warhammer"
+      ) ||
+      context.includes(
+        "horus"
+      ) ||
+      context.includes(
+        "heresy"
+      ) ||
+      context.includes(
+        "black library"
+      ) ||
+      context.includes(
+        "dan abnett"
+      ) ||
+      context.includes(
+        "graham mcneill"
+      ) ||
+      context.includes(
+        "aaron dembski"
+      ) ||
+      context.includes(
+        "chris wraight"
+      ) ||
+      context.includes(
+        "guy haley"
+      ) ||
+      context.includes(
+        "john french"
+      );
+
+    if (
+      !looksLikeRelevantBook
+    ) {
+      continue;
+    }
 
     products.push({
       source:
@@ -701,25 +870,40 @@ function parseMegaPage(html) {
       currency:
         "PLN",
 
-      available:
-        unavailable
-          ? false
-          : available
-            ? true
-            : null,
+      available,
 
       stock:
         null,
 
-      image:
-        imageMatch?.[1] ||
-        null,
+      image,
 
       url,
     });
   }
 
-  return products;
+  /*
+    Usuwamy duplikaty.
+  */
+
+  const unique =
+    new Map();
+
+  for (const item of products) {
+    if (
+      !unique.has(
+        item.url
+      )
+    ) {
+      unique.set(
+        item.url,
+        item
+      );
+    }
+  }
+
+  return [
+    ...unique.values(),
+  ];
 }
 
 async function getMegaCatalog() {
@@ -729,14 +913,10 @@ async function getMegaCatalog() {
   const all = [];
 
   /*
-    MegaKsiazki ma bardzo dużo stron
-    katalogu.
+    Na razie tylko 8 stron.
 
-    Na tym etapie bierzemy pierwsze 8.
-    To około 160 produktów.
-
-    Dzięki temu request nie powinien
-    trwać absurdalnie długo.
+    Jak parser potwierdzimy,
+    zwiększymy ten limit.
   */
 
   const MAX_PAGES = 8;
@@ -753,22 +933,23 @@ async function getMegaCatalog() {
           : `${base}?p=${page}`;
 
       const html =
-        await fetchHtml(url);
+        await fetchHtml(
+          url
+        );
 
       const products =
         parseMegaPage(
           html
         );
 
-      if (
-        products.length === 0
-      ) {
-        break;
-      }
-
       all.push(
         ...products
       );
+
+      /*
+        Nie kończymy po jednej pustej stronie,
+        bo struktura może być różna.
+      */
 
       await sleep(120);
 
@@ -792,7 +973,9 @@ async function getMegaCatalog() {
         item.title
       );
 
-    if (!unique.has(key)) {
+    if (
+      !unique.has(key)
+    ) {
       unique.set(
         key,
         item
@@ -807,7 +990,7 @@ async function getMegaCatalog() {
 
 /*
   ============================================
-  DOPASOWYWANIE KATALOGÓW
+  DOPASOWANIE KATALOGÓW
   ============================================
 */
 
@@ -818,7 +1001,10 @@ function findCatalogOffers(
 ) {
   const matches = [];
 
-  for (const product of catalog) {
+  for (
+    const product
+    of catalog
+  ) {
     const score =
       bestBookScore(
         book,
@@ -873,7 +1059,10 @@ function findCatalogOffers(
         b.price
       );
     })
-    .slice(0, 10);
+    .slice(
+      0,
+      10
+    );
 }
 
 function cheapest(offers) {
@@ -904,8 +1093,11 @@ async function findBook(
     Allegro Lokalnie
   */
 
-  let allegroOffers = [];
-  let allegroError = null;
+  let allegroOffers =
+    [];
+
+  let allegroError =
+    null;
 
   try {
     const raw =
@@ -913,7 +1105,10 @@ async function findBook(
         book.originalTitle
       );
 
-    for (const offer of raw) {
+    for (
+      const offer
+      of raw
+    ) {
       const score =
         allegroOfferScore(
           book,
@@ -999,8 +1194,7 @@ async function findBook(
     );
 
   /*
-    Najtańsza NOWA oferta
-    spośród sklepów.
+    Najtańsza NOWA oferta.
   */
 
   const newCandidates =
@@ -1104,7 +1298,9 @@ async function findBook(
   ============================================
 */
 
-export async function GET(request) {
+export async function GET(
+  request
+) {
   try {
     const {
       searchParams,
@@ -1128,18 +1324,27 @@ export async function GET(request) {
       );
 
     if (
-      !Number.isInteger(offset) ||
+      !Number.isInteger(
+        offset
+      ) ||
       offset < 0
     ) {
       offset = 0;
     }
 
     if (
-      !Number.isInteger(limit) ||
+      !Number.isInteger(
+        limit
+      ) ||
       limit < 1
     ) {
       limit = 1;
     }
+
+    /*
+      Na razie max 3 książki,
+      głównie ze względu na Allegro Lokalnie.
+    */
 
     limit =
       Math.min(
@@ -1148,7 +1353,7 @@ export async function GET(request) {
       );
 
     /*
-      Oba katalogi sklepowe pobieramy
+      Katalogi nowych książek pobieramy
       tylko raz na cały request.
     */
 
@@ -1185,8 +1390,7 @@ export async function GET(request) {
       );
 
       /*
-        Tylko Allegro Lokalnie
-        generuje wyszukiwanie per książka.
+        Przerwa głównie dla Allegro Lokalnie.
       */
 
       await sleep(800);
