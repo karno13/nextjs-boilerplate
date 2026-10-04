@@ -119,10 +119,7 @@ function scoreMatch(wanted, found) {
 
   const wantedWords = a
     .split(" ")
-    .filter(
-      (word) =>
-        word.length > 2
-    );
+    .filter((word) => word.length > 2);
 
   const foundWords = b
     .split(" ")
@@ -132,29 +129,15 @@ function scoreMatch(wanted, found) {
     return 0;
   }
 
-  /*
-    Jednowyrazowe tytuły:
-    wymagamy dokładnego tokenu.
-
-    Legion != Legions
-  */
-
   if (wantedWords.length === 1) {
-    const word =
-      wantedWords[0];
+    const word = wantedWords[0];
 
-    if (
-      !foundWords.includes(word)
-    ) {
+    if (!foundWords.includes(word)) {
       return 0;
     }
 
     return 55;
   }
-
-  /*
-    Tytuły wielowyrazowe.
-  */
 
   if (b.includes(a)) {
     return 95;
@@ -166,9 +149,7 @@ function scoreMatch(wanted, found) {
   let matches = 0;
 
   for (const word of wantedWords) {
-    if (
-      foundSet.has(word)
-    ) {
+    if (foundSet.has(word)) {
       matches++;
     }
   }
@@ -205,13 +186,8 @@ function bestBookScore(book, title) {
       book.searchTerms
     )
   ) {
-    for (
-      const term
-      of book.searchTerms
-    ) {
-      if (!term) {
-        continue;
-      }
+    for (const term of book.searchTerms) {
+      if (!term) continue;
 
       scores.push(
         scoreMatch(
@@ -231,18 +207,7 @@ function bestBookScore(book, title) {
 
 /*
   ============================================================
-  MATCHER DLA ZAUFANYCH KATALOGÓW KSIĄŻKOWYCH
-
-  Hegemon i Pan Mysza są katalogami książek,
-  więc możemy bezpieczniej traktować krótkie tytuły.
-
-  Przykład:
-  HORUS HERESY: MECHANICUM (PB)
-  powinno pasować do Mechanicum.
-
-  Ale:
-  SHATTERED LEGIONS
-  nie powinno pasować do Legion.
+  MATCHER DLA HEGEMON / PAN MYSZA
   ============================================================
 */
 
@@ -253,9 +218,7 @@ function trustedCatalogBookScore(book, title) {
   const candidates = [
     book.originalTitle,
     book.polishTitle,
-    ...(Array.isArray(
-      book.searchTerms
-    )
+    ...(Array.isArray(book.searchTerms)
       ? book.searchTerms
       : []),
   ]
@@ -264,13 +227,8 @@ function trustedCatalogBookScore(book, title) {
 
   let best = 0;
 
-  for (
-    const candidate
-    of candidates
-  ) {
-    if (!candidate) {
-      continue;
-    }
+  for (const candidate of candidates) {
+    if (!candidate) continue;
 
     const wantedWords =
       candidate
@@ -280,14 +238,7 @@ function trustedCatalogBookScore(book, title) {
             word.length > 2
         );
 
-    /*
-      Wielowyrazowe:
-      standardowy matcher.
-    */
-
-    if (
-      wantedWords.length > 1
-    ) {
+    if (wantedWords.length > 1) {
       best =
         Math.max(
           best,
@@ -299,10 +250,6 @@ function trustedCatalogBookScore(book, title) {
 
       continue;
     }
-
-    /*
-      Jednowyrazowe.
-    */
 
     const wanted =
       wantedWords[0];
@@ -316,10 +263,6 @@ function trustedCatalogBookScore(book, title) {
         .split(" ")
         .filter(Boolean);
 
-    /*
-      Musi istnieć dokładny token.
-    */
-
     if (
       !foundWords.includes(
         wanted
@@ -327,11 +270,6 @@ function trustedCatalogBookScore(book, title) {
     ) {
       continue;
     }
-
-    /*
-      Typowe dodatki katalogowe,
-      które nie są częścią właściwego tytułu.
-    */
 
     const harmlessWords =
       new Set([
@@ -341,15 +279,12 @@ function trustedCatalogBookScore(book, title) {
         "warhammer",
         "40000",
         "40k",
-
         "pb",
         "hb",
         "eng",
-
         "paperback",
         "hardback",
         "softback",
-
         "edition",
         "novel",
         "book",
@@ -361,15 +296,6 @@ function trustedCatalogBookScore(book, title) {
           word !== wanted &&
           !harmlessWords.has(word)
       );
-
-    /*
-      HORUS HERESY MECHANICUM PB
-      => 95
-
-      PODZIELONY LEGION
-      => ma dodatkowe istotne słowo
-      => tylko 55
-    */
 
     if (
       meaningfulOtherWords.length ===
@@ -503,10 +429,6 @@ function allegroOfferScore(
       .split(" ")
       .filter(Boolean);
 
-  /*
-    Pozytywny kontekst książkowy.
-  */
-
   const positiveContext = [
     "warhammer",
     "black library",
@@ -538,12 +460,6 @@ function allegroOfferScore(
     }
   }
 
-  /*
-    ========================================================
-    KRÓTKIE / JEDNOWYRAZOWE TYTUŁY
-    ========================================================
-  */
-
   if (
     wantedWords.length === 1
   ) {
@@ -555,55 +471,27 @@ function allegroOfferScore(
         word
       );
 
-    /*
-      Legion != Legions
-    */
-
     if (
       exactTokenIndex === -1
     ) {
       return 0;
     }
 
-    /*
-      Bez kontekstu Warhammer / książka
-      takie słowo jest zbyt ogólne.
-    */
-
     if (!hasBookContext) {
       score -= 60;
     }
-
-    /*
-      Jeśli tytuł jest na początku,
-      zwiększamy pewność.
-    */
 
     if (
       exactTokenIndex === 0
     ) {
       score += 30;
-
     } else if (
       exactTokenIndex <= 2
     ) {
       score += 15;
-
     } else {
-      /*
-        np. "Szramy Podzielony Legion"
-      */
-
       score -= 40;
     }
-
-    /*
-      Sprawdzamy słowo bezpośrednio
-      przed tytułem.
-
-      "Podzielony Legion"
-      to inny tytuł niż "Legion".
-    */
 
     if (
       exactTokenIndex > 0
@@ -635,32 +523,17 @@ function allegroOfferScore(
     }
   }
 
-  /*
-    ========================================================
-    EWIDENTNE NIE-KSIĄŻKI
-    ========================================================
-  */
-
   const badWords = [
-    /*
-      Kolekcjonerstwo
-    */
     "banknot",
     "banknoty",
     "moneta",
     "monety",
 
-    /*
-      TCG
-    */
     "booster",
     "boostery",
     "pokemon",
-
-    /*
-      Zabawki / gadżety
-    */
     "lego",
+
     "koszulka",
     "plakat",
     "kubek",
@@ -668,9 +541,6 @@ function allegroOfferScore(
     "naklejka",
     "puzzle",
 
-    /*
-      Figurki / bitewniaki
-    */
     "figurka",
     "figurki",
     "miniatura",
@@ -684,9 +554,6 @@ function allegroOfferScore(
     "model do gry",
     "modele do gry",
 
-    /*
-      Elektronika
-    */
     "lenovo",
     "laptop",
     "komputer",
@@ -698,9 +565,6 @@ function allegroOfferScore(
     "geforce",
     "ryzen",
 
-    /*
-      Inne
-    */
     "world of warcraft",
     "wow gold",
     "bmx",
@@ -890,7 +754,7 @@ async function searchLokalnie(query) {
 
 /*
   ============================================================
-  HEGEMON
+  HEGEMON - PARSER KATALOGU
   ============================================================
 */
 
@@ -969,6 +833,30 @@ function parseHegemonPage(html) {
         stock > 0;
     }
 
+    /*
+      Możemy czasem rozstrzygnąć dostępność
+      już z karty katalogowej.
+    */
+
+    if (
+      /product-flag\s+out_of_stock/i.test(
+        around
+      ) ||
+      /Obecnie niedostępny/i.test(
+        around
+      )
+    ) {
+      available = false;
+    }
+
+    if (
+      /product-flag\s+in_stock/i.test(
+        around
+      )
+    ) {
+      available = true;
+    }
+
     products.push({
       source:
         "hegemon",
@@ -990,6 +878,9 @@ function parseHegemonPage(html) {
       stock,
 
       available,
+
+      availabilityChecked:
+        false,
 
       image:
         imageMatch?.[1] ||
@@ -1107,6 +998,217 @@ async function getHegemonCatalog() {
   return [
     ...unique.values(),
   ];
+}
+
+/*
+  ============================================================
+  HEGEMON - DOKŁADNE SPRAWDZENIE STRONY PRODUKTU
+  ============================================================
+*/
+
+function parseHegemonProductAvailability(
+  html
+) {
+  /*
+    Najpewniejszy sygnał:
+    schema.org/Offer
+  */
+
+  if (
+    /schema\.org\/OutOfStock/i.test(
+      html
+    )
+  ) {
+    return {
+      available: false,
+      stock: null,
+      reason:
+        "schema_out_of_stock",
+    };
+  }
+
+  if (
+    /schema\.org\/InStock/i.test(
+      html
+    )
+  ) {
+    const stockMatch =
+      html.match(
+        /data-stock=["'](\d+)["']/i
+      ) ||
+      html.match(
+        /Na stanie\s*:?\s*(\d+)\s*szt/i
+      );
+
+    return {
+      available: true,
+
+      stock:
+        stockMatch
+          ? Number(
+              stockMatch[1]
+            )
+          : null,
+
+      reason:
+        "schema_in_stock",
+    };
+  }
+
+  /*
+    Drugi mocny sygnał:
+    komunikat Hegemona.
+  */
+
+  if (
+    /product-unavailable/i.test(
+      html
+    ) ||
+    /Obecnie niedostępny/i.test(
+      html
+    )
+  ) {
+    return {
+      available: false,
+      stock: null,
+      reason:
+        "product_unavailable",
+    };
+  }
+
+  const stockMatch =
+    html.match(
+      /data-stock=["'](\d+)["']/i
+    ) ||
+    html.match(
+      /Na stanie\s*:?\s*(\d+)\s*szt/i
+    );
+
+  if (stockMatch) {
+    const stock =
+      Number(
+        stockMatch[1]
+      );
+
+    return {
+      available:
+        stock > 0,
+
+      stock,
+
+      reason:
+        "stock_count",
+    };
+  }
+
+  /*
+    Aktywny przycisk "Dodaj do koszyka"
+    też jest użyteczny.
+
+    Uwaga:
+    sprawdzamy, czy button nie ma disabled.
+  */
+
+  const cartButtonMatch =
+    html.match(
+      /<button[^>]*class=["'][^"']*add-to-cart[^"']*["'][^>]*>/i
+    );
+
+  if (cartButtonMatch) {
+    const button =
+      cartButtonMatch[0];
+
+    if (
+      /\bdisabled\b/i.test(
+        button
+      )
+    ) {
+      return {
+        available: false,
+        stock: null,
+        reason:
+          "cart_disabled",
+      };
+    }
+
+    return {
+      available: true,
+      stock: null,
+      reason:
+        "cart_enabled",
+    };
+  }
+
+  return {
+    available: null,
+    stock: null,
+    reason:
+      "unknown",
+  };
+}
+
+async function checkHegemonOfferAvailability(
+  offer
+) {
+  /*
+    Jeśli katalog już dał nam pewną
+    dostępność, nie robimy dodatkowego requestu.
+  */
+
+  if (
+    offer.available === true ||
+    offer.available === false
+  ) {
+    return {
+      ...offer,
+
+      availabilityChecked:
+        true,
+
+      availabilityReason:
+        "catalog",
+    };
+  }
+
+  try {
+    const html =
+      await fetchHtml(
+        offer.url
+      );
+
+    const status =
+      parseHegemonProductAvailability(
+        html
+      );
+
+    return {
+      ...offer,
+
+      available:
+        status.available,
+
+      stock:
+        status.stock ??
+        offer.stock,
+
+      availabilityChecked:
+        true,
+
+      availabilityReason:
+        status.reason,
+    };
+
+  } catch (error) {
+    return {
+      ...offer,
+
+      availabilityChecked:
+        false,
+
+      availabilityError:
+        error.message,
+    };
+  }
 }
 
 /*
@@ -1600,10 +1702,6 @@ function findCatalogOffers(
   return matches
     .sort(
       (a, b) => {
-        /*
-          Najpierw jakość dopasowania.
-        */
-
         if (
           b.matchScore !==
           a.matchScore
@@ -1613,10 +1711,6 @@ function findCatalogOffers(
             a.matchScore
           );
         }
-
-        /*
-          Dostępność.
-        */
 
         const aAvailability =
           a.available === true
@@ -1641,10 +1735,6 @@ function findCatalogOffers(
             aAvailability
           );
         }
-
-        /*
-          Cena.
-        */
 
         if (
           a.price == null &&
@@ -1689,9 +1779,7 @@ async function findBook(
   panCatalog
 ) {
   /*
-    -------------------------
     ALLEGRO LOKALNIE
-    -------------------------
   */
 
   let allegroOffers = [];
@@ -1730,10 +1818,6 @@ async function findBook(
       error.message;
   }
 
-  /*
-    Deduplikacja.
-  */
-
   const allegroUnique =
     new Map();
 
@@ -1756,10 +1840,6 @@ async function findBook(
   allegroOffers = [
     ...allegroUnique.values(),
   ];
-
-  /*
-    Sortowanie Allegro.
-  */
 
   allegroOffers.sort(
     (a, b) => {
@@ -1800,12 +1880,10 @@ async function findBook(
   );
 
   /*
-    -------------------------
     HEGEMON
-    -------------------------
   */
 
-  const hegemonOffers =
+  let hegemonOffers =
     findCatalogOffers(
       book,
       hegemonCatalog,
@@ -1813,9 +1891,42 @@ async function findBook(
     );
 
   /*
-    -------------------------
+    Dociągamy stronę produktu TYLKO
+    dla ofert z nieznaną dostępnością.
+  */
+
+  const resolvedHegemonOffers = [];
+
+  for (
+    const offer
+    of hegemonOffers
+  ) {
+    if (
+      offer.available == null
+    ) {
+      const resolved =
+        await checkHegemonOfferAvailability(
+          offer
+        );
+
+      resolvedHegemonOffers.push(
+        resolved
+      );
+
+      await sleep(100);
+
+    } else {
+      resolvedHegemonOffers.push(
+        offer
+      );
+    }
+  }
+
+  hegemonOffers =
+    resolvedHegemonOffers;
+
+  /*
     PAN MYSZA
-    -------------------------
   */
 
   const panOffers =
@@ -1826,9 +1937,7 @@ async function findBook(
     );
 
   /*
-    ========================================================
-    NAJTAŃSZE OFERTY
-    ========================================================
+    NAJTAŃSZE
   */
 
   const cheapestAllegro =
@@ -1846,10 +1955,6 @@ async function findBook(
       panOffers
     );
 
-  /*
-    NOWE
-  */
-
   const newCandidates = [
     cheapestHegemon,
     cheapestPan,
@@ -1865,29 +1970,8 @@ async function findBook(
     newCandidates[0] ||
     null;
 
-  /*
-    UŻYWANE
-  */
-
-  const usedCandidates = [
-    cheapestAllegro,
-  ]
-    .filter(Boolean)
-    .sort(
-      (a, b) =>
-        a.price -
-        b.price
-    );
-
   const bestUsed =
-    usedCandidates[0] ||
-    null;
-
-  /*
-    ========================================================
-    RESPONSE DLA KSIĄŻKI
-    ========================================================
-  */
+    cheapestAllegro;
 
   return {
     ...book,
@@ -1898,12 +1982,6 @@ async function findBook(
       panOffers.length > 0,
 
     sources: {
-      /*
-        -------------------------
-        ALLEGRO LOKALNIE
-        -------------------------
-      */
-
       allegro_lokalnie: {
         found:
           allegroOffers.length > 0,
@@ -1932,12 +2010,6 @@ async function findBook(
             20
           ),
       },
-
-      /*
-        -------------------------
-        HEGEMON
-        -------------------------
-      */
 
       hegemon: {
         found:
@@ -1974,12 +2046,6 @@ async function findBook(
         offers:
           hegemonOffers,
       },
-
-      /*
-        -------------------------
-        PAN MYSZA
-        -------------------------
-      */
 
       pan_mysza: {
         found:
@@ -2018,12 +2084,6 @@ async function findBook(
       },
     },
 
-    /*
-      -------------------------
-      NAJLEPSZA UŻYWANA
-      -------------------------
-    */
-
     bestUsedPrice:
       bestUsed?.price ??
       null,
@@ -2035,12 +2095,6 @@ async function findBook(
     bestUsedUrl:
       bestUsed?.url ??
       null,
-
-    /*
-      -------------------------
-      NAJLEPSZA NOWA
-      -------------------------
-    */
 
     bestNewPrice:
       bestNew?.price ??
@@ -2087,10 +2141,6 @@ export async function GET(
         ) || 1
       );
 
-    /*
-      Walidacja offset.
-    */
-
     if (
       !Number.isInteger(
         offset
@@ -2099,10 +2149,6 @@ export async function GET(
     ) {
       offset = 0;
     }
-
-    /*
-      Walidacja limit.
-    */
 
     if (
       !Number.isInteger(
@@ -2113,21 +2159,11 @@ export async function GET(
       limit = 1;
     }
 
-    /*
-      Max 3 książki na request,
-      głównie przez Allegro Lokalnie.
-    */
-
     limit =
       Math.min(
         limit,
         3
       );
-
-    /*
-      Hegemon + Pan Mysza
-      pobieramy raz na request.
-    */
 
     const [
       hegemonCatalog,
@@ -2161,23 +2197,12 @@ export async function GET(
         result
       );
 
-      /*
-        Pauza głównie dla
-        Allegro Lokalnie.
-      */
-
       await sleep(800);
     }
 
     const nextOffset =
       offset +
       books.length;
-
-    /*
-      ========================================================
-      RESPONSE
-      ========================================================
-    */
 
     return new Response(
       JSON.stringify(
