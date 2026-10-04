@@ -22,23 +22,23 @@ const HEADERS = {
 
 /*
   ============================================
-  FUNKCJE WSPÓLNE
+  HELPERY
   ============================================
 */
 
 function cleanText(value = "") {
-  return value
+  return String(value)
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#160;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&ndash;/g, "–")
-    .replace(/&mdash;/g, "—")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&ndash;/gi, "–")
+    .replace(/&mdash;/gi, "—")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -68,7 +68,7 @@ function cleanOfferTitle(value = "") {
 }
 
 function normalize(value = "") {
-  return value
+  return String(value)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -80,9 +80,10 @@ function normalize(value = "") {
 function parsePrice(value) {
   if (!value) return null;
 
-  const match = value.match(
-    /(\d[\d\s]*(?:[,.]\d{1,2})?)/
-  );
+  const match =
+    String(value).match(
+      /(\d[\d\s]*(?:[,.]\d{1,2})?)/
+    );
 
   if (!match) return null;
 
@@ -111,59 +112,95 @@ function scoreMatch(wanted, found) {
     return 95;
   }
 
-  const wantedWords = a
-    .split(" ")
-    .filter((word) => word.length > 2);
+  const wantedWords =
+    a
+      .split(" ")
+      .filter(
+        (word) =>
+          word.length > 2
+      );
 
   if (!wantedWords.length) {
     return 0;
   }
 
   const foundWords =
-    new Set(b.split(" "));
+    new Set(
+      b.split(" ")
+    );
 
   let matches = 0;
 
   for (const word of wantedWords) {
-    if (foundWords.has(word)) {
+    if (
+      foundWords.has(word)
+    ) {
       matches++;
     }
   }
 
   return (
-    matches / wantedWords.length
+    matches /
+    wantedWords.length
   ) * 100;
 }
 
 function bestBookScore(book, title) {
-  return Math.max(
+  const scores = [
     scoreMatch(
       book.originalTitle,
       title
     ),
+  ];
 
-    book.polishTitle
-      ? scoreMatch(
-          book.polishTitle,
+  if (book.polishTitle) {
+    scores.push(
+      scoreMatch(
+        book.polishTitle,
+        title
+      )
+    );
+  }
+
+  if (
+    Array.isArray(
+      book.searchTerms
+    )
+  ) {
+    for (
+      const term
+      of book.searchTerms
+    ) {
+      scores.push(
+        scoreMatch(
+          term,
           title
         )
-      : 0
-  );
+      );
+    }
+  }
+
+  return Math.max(...scores);
 }
 
 async function fetchHtml(url) {
-  const response = await fetch(url, {
-    next: {
-      revalidate: 3600,
-    },
+  const response =
+    await fetch(url, {
+      next: {
+        revalidate: 3600,
+      },
 
-    headers: HEADERS,
+      headers: HEADERS,
 
-    redirect: "follow",
-  });
+      redirect: "follow",
+    });
 
-  if (response.status === 429) {
-    throw new Error("RATE_LIMITED");
+  if (
+    response.status === 429
+  ) {
+    throw new Error(
+      "RATE_LIMITED"
+    );
   }
 
   if (!response.ok) {
@@ -189,6 +226,21 @@ function cheapest(offers) {
   );
 }
 
+function cheapestAvailable(offers) {
+  return (
+    offers
+      .filter(
+        (offer) =>
+          offer.price != null &&
+          offer.available !== false
+      )
+      .sort(
+        (a, b) =>
+          a.price - b.price
+      )[0] || null
+  );
+}
+
 /*
   ============================================
   ALLEGRO LOKALNIE
@@ -200,7 +252,9 @@ function allegroOfferScore(
   result
 ) {
   const text =
-    normalize(result.title);
+    normalize(
+      result.title
+    );
 
   let score =
     bestBookScore(
@@ -267,15 +321,18 @@ async function searchLokalnie(query) {
     "https://allegrolokalnie.pl/oferty/q/" +
     encodeURIComponent(query);
 
-  const response = await fetch(url, {
-    next: {
-      revalidate: 3600,
-    },
+  const response =
+    await fetch(url, {
+      next: {
+        revalidate: 3600,
+      },
 
-    headers: HEADERS,
-  });
+      headers: HEADERS,
+    });
 
-  if (response.status === 429) {
+  if (
+    response.status === 429
+  ) {
     throw new Error(
       "RATE_LIMITED"
     );
@@ -299,7 +356,8 @@ async function searchLokalnie(query) {
 
   while (
     (match =
-      linkRegex.exec(html)) !== null
+      linkRegex.exec(html)) !==
+    null
   ) {
     const relativeUrl =
       match[1];
@@ -376,7 +434,11 @@ async function searchLokalnie(query) {
         priceMatch?.[0] ||
         null,
 
-      currency: "PLN",
+      currency:
+        "PLN",
+
+      available:
+        true,
 
       image:
         imageMatch?.[1] ||
@@ -399,7 +461,9 @@ async function searchLokalnie(query) {
 
   for (const item of results) {
     if (
-      !unique.has(item.url)
+      !unique.has(
+        item.url
+      )
     ) {
       unique.set(
         item.url,
@@ -429,7 +493,8 @@ function parseHegemonPage(html) {
 
   while (
     (match =
-      titleRegex.exec(html)) !== null
+      titleRegex.exec(html)) !==
+    null
   ) {
     const url =
       match[1];
@@ -486,9 +551,11 @@ function parseHegemonPage(html) {
         : null;
 
     products.push({
-      source: "hegemon",
+      source:
+        "hegemon",
 
-      condition: "new",
+      condition:
+        "new",
 
       title,
 
@@ -498,7 +565,8 @@ function parseHegemonPage(html) {
         priceMatch?.[0] ||
         null,
 
-      currency: "PLN",
+      currency:
+        "PLN",
 
       stock,
 
@@ -525,7 +593,10 @@ function getHegemonPageCount(html) {
     /(\d+)\s+produkty/i,
   ];
 
-  for (const pattern of patterns) {
+  for (
+    const pattern
+    of patterns
+  ) {
     const match =
       html.match(pattern);
 
@@ -583,10 +654,9 @@ async function getHegemonCatalog() {
       );
 
       await sleep(120);
-
     } catch (error) {
       console.error(
-        `Hegemon ${page}:`,
+        `Hegemon page ${page}:`,
         error.message
       );
     }
@@ -598,9 +668,13 @@ async function getHegemonCatalog() {
   for (const item of all) {
     const key =
       item.url ||
-      normalize(item.title);
+      normalize(
+        item.title
+      );
 
-    if (!unique.has(key)) {
+    if (
+      !unique.has(key)
+    ) {
       unique.set(
         key,
         item
@@ -615,357 +689,401 @@ async function getHegemonCatalog() {
 
 /*
   ============================================
-  SKUPSZOP
+  PAN MYSZA
   ============================================
 
-  Zamiast wyszukiwać 555 razy,
-  pobieramy katalogi wydawnictw:
+  Kategoria:
+  https://panmysza.pl/pl/c/Black-Library/686
 
-  - Black Library
-  - Copernicus Center Press
-
-  SkupSzop ma oba katalogi jako normalne
-  strony HTML.
+  Kolejne strony:
+  /686/2
+  /686/3
+  itd.
 */
 
-function detectSkupCondition(text) {
-  const normalized =
-    normalize(text);
-
-  if (
-    normalized.includes("nowa")
-  ) {
-    return "new";
+function makePanAbsoluteUrl(
+  value
+) {
+  if (!value) {
+    return null;
   }
 
   if (
-    normalized.includes(
-      "jak nowa"
+    value.startsWith(
+      "https://"
+    ) ||
+    value.startsWith(
+      "http://"
     )
   ) {
-    return "like_new";
+    return value;
   }
 
   if (
-    normalized.includes(
-      "bardzo dobry"
-    )
+    value.startsWith("//")
   ) {
-    return "very_good";
+    return (
+      "https:" +
+      value
+    );
   }
 
   if (
-    normalized.includes("dobry")
+    value.startsWith("/")
   ) {
-    return "good";
+    return (
+      "https://panmysza.pl" +
+      value
+    );
   }
 
-  return "unknown";
+  return (
+    "https://panmysza.pl/" +
+    value
+  );
 }
 
-function parseSkupPage(html) {
-  const products = [];
+function getPanPageCount(html) {
+  const regex =
+    /href=["'][^"']*\/pl\/c\/Black-Library\/686\/(\d+)[^"']*["']/gi;
 
-  /*
-    Strony produktów SkupSzopu są
-    bezpośrednio pod domeną:
-
-    https://skupszop.pl/nazwa-produktu-ISBN
-  */
-
-  const linkRegex =
-    /<a[^>]+href=["'](https?:\/\/skupszop\.pl\/[^"'?#]+|\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-
+  let maxPage = 1;
   let match;
 
   while (
     (match =
-      linkRegex.exec(html)) !== null
+      regex.exec(html)) !==
+    null
   ) {
-    let url =
-      match[1];
+    const page =
+      Number(match[1]);
 
     if (
-      url.startsWith("/")
+      Number.isFinite(page) &&
+      page > maxPage
     ) {
-      url =
-        "https://skupszop.pl" +
-        url;
+      maxPage = page;
     }
+  }
 
-    /*
-      Ignorujemy strony systemowe.
-    */
+  /*
+    Ochrona przed przypadkowym
+    złapaniem absurdalnej liczby.
+  */
 
-    const path =
-      url
-        .replace(
-          "https://skupszop.pl",
-          ""
-        )
-        .toLowerCase();
+  return Math.min(
+    Math.max(
+      maxPage,
+      1
+    ),
+    25
+  );
+}
 
-    const excludedPrefixes = [
-      "/autor/",
-      "/wydawnictwo/",
-      "/kategoria/",
-      "/seria/",
-      "/tag/",
-      "/blog",
-      "/pomoc",
-      "/kontakt",
-      "/sprzedaj",
-      "/koszyk",
-      "/login",
-      "/mapa",
-      "/wszystkie-",
-      "/regulamin",
-    ];
+function parsePanMyszaPage(html) {
+  const products = [];
 
-    if (
-      excludedPrefixes.some(
-        (prefix) =>
-          path.startsWith(prefix)
-      )
-    ) {
-      continue;
-    }
+  /*
+    Szukamy początków kart:
+    <div data-product-id="...">
+  */
 
-    const around =
+  const startRegex =
+    /<div\b[^>]*data-product-id=["']([^"']+)["'][^>]*>/gi;
+
+  const starts = [];
+
+  let startMatch;
+
+  while (
+    (startMatch =
+      startRegex.exec(html)) !==
+    null
+  ) {
+    starts.push({
+      index:
+        startMatch.index,
+
+      productId:
+        startMatch[1],
+    });
+  }
+
+  for (
+    let i = 0;
+    i < starts.length;
+    i++
+  ) {
+    const start =
+      starts[i].index;
+
+    const end =
+      i + 1 <
+      starts.length
+        ? starts[i + 1].index
+        : Math.min(
+            html.length,
+            start + 15000
+          );
+
+    const block =
       html.slice(
-        Math.max(
-          0,
-          match.index - 1600
-        ),
-
-        Math.min(
-          html.length,
-          match.index +
-            match[0].length +
-            3000
-        )
-      );
-
-    let title =
-      cleanText(
-        match[2]
+        start,
+        end
       );
 
     /*
-      Link może zawierać obraz.
+      Link produktu.
+      W Shoperze ma format:
+      /pl/p/Tytul/12345
     */
 
-    if (
-      !title ||
-      title.length < 3
-    ) {
-      const altMatch =
-        match[0].match(
-          /alt=["']([^"']+)["']/i
-        );
+    const linkMatch =
+      block.match(
+        /<a[^>]+href=["']([^"']*\/pl\/p\/[^"']+)["'][^>]*title=["']([^"']+)["'][^>]*>/i
+      ) ||
+      block.match(
+        /<a[^>]+title=["']([^"']+)["'][^>]*href=["']([^"']*\/pl\/p\/[^"']+)["'][^>]*>/i
+      );
 
-      if (altMatch) {
-        title =
-          cleanText(
-            altMatch[1]
-          );
-      }
-    }
+    let url = null;
+    let title = null;
 
-    /*
-      Ewentualnie title="".
-    */
-
-    if (
-      !title ||
-      title.length < 3
-    ) {
-      const titleMatch =
-        match[0].match(
-          /title=["']([^"']+)["']/i
-        );
-
-      if (titleMatch) {
-        title =
-          cleanText(
-            titleMatch[1]
-          );
-      }
-    }
-
-    if (
-      !title ||
-      title.length < 3
-    ) {
-      continue;
-    }
-
-    /*
-      Odrzucamy typowe elementy menu.
-    */
-
-    const normalizedTitle =
-      normalize(title);
-
-    const badTitles = [
-      "dodaj do koszyka",
-      "dodano do koszyka",
-      "pokaz szczegoly",
-      "szczegoly",
-      "dowiedz sie wiecej",
-      "powiadom mnie",
-      "zobacz wszystkie ksiazki",
-    ];
-
-    if (
-      badTitles.some(
-        (bad) =>
-          normalizedTitle === bad
-      )
-    ) {
-      continue;
-    }
-
-    /*
-      Cena.
-    */
-
-    const priceMatches =
-      [
-        ...around.matchAll(
-          /(\d[\d\s]*[,.]\d{2})\s*zł/gi
-        ),
-      ];
-
-    let price = null;
-    let rawPrice = null;
-
-    /*
-      Bierzemy pierwszą rozsądną cenę.
-    */
-
-    for (
-      const priceMatch
-      of priceMatches
-    ) {
-      const parsed =
-        parsePrice(
-          priceMatch[1]
-        );
+    if (linkMatch) {
+      /*
+        Obsługujemy obie kolejności
+        atrybutów.
+      */
 
       if (
-        parsed != null &&
-        parsed > 1 &&
-        parsed < 1000
+        linkMatch[1]
+          .includes(
+            "/pl/p/"
+          )
       ) {
-        price =
-          parsed;
+        url =
+          linkMatch[1];
 
-        rawPrice =
-          priceMatch[0];
+        title =
+          linkMatch[2];
+      } else {
+        title =
+          linkMatch[1];
 
-        break;
+        url =
+          linkMatch[2];
       }
     }
 
     /*
-      Stan książki.
+      Awaryjnie osobno href + title.
     */
 
-    const condition =
-      detectSkupCondition(
-        cleanText(around)
-      );
+    if (!url) {
+      const hrefMatch =
+        block.match(
+          /href=["']([^"']*\/pl\/p\/[^"']+)["']/i
+        );
 
-    /*
-      Obraz.
-    */
-
-    const imageMatch =
-      around.match(
-        /<img[^>]+(?:src|data-src)=["']([^"']+)["']/i
-      );
-
-    let image =
-      imageMatch?.[1] ||
-      null;
-
-    if (
-      image &&
-      image.startsWith("//")
-    ) {
-      image =
-        "https:" + image;
+      url =
+        hrefMatch?.[1] ||
+        null;
     }
 
-    if (
-      image &&
-      image.startsWith("/")
-    ) {
-      image =
-        "https://skupszop.pl" +
-        image;
+    if (!title) {
+      const titleMatch =
+        block.match(
+          /class=["'][^"']*productname[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i
+        );
+
+      title =
+        titleMatch
+          ? cleanText(
+              titleMatch[1]
+            )
+          : null;
     }
 
-    /*
-      ISBN w URL pomaga odsiać
-      linki nieproduktowe.
-    */
+    if (!title) {
+      const altMatch =
+        block.match(
+          /<img[^>]+alt=["']([^"']+)["']/i
+        );
 
-    const hasIsbnInUrl =
-      /(?:978|979)\d{10}/.test(
+      title =
+        altMatch
+          ? cleanText(
+              altMatch[1]
+            )
+          : null;
+    }
+
+    title =
+      cleanText(
+        title || ""
+      );
+
+    if (
+      !url ||
+      !title ||
+      title.length < 3
+    ) {
+      continue;
+    }
+
+    url =
+      makePanAbsoluteUrl(
         url
       );
 
     /*
-      Dodatkowy kontekst książkowy.
+      Cena jest zwykle:
+      <em>44,00 zł</em>
+
+      Nie polegamy na samym napisie "zł",
+      bo w debug HTML mieliśmy mojibake:
+      zÅ‚.
     */
 
-    const context =
-      normalize(
-        title +
-        " " +
-        cleanText(around)
+    const priceMatch =
+      block.match(
+        /<em[^>]*>\s*(\d[\d\s]*[,.]\d{2})[\s\S]*?<\/em>/i
       );
 
-    const looksRelevant =
-      hasIsbnInUrl ||
-      context.includes(
-        "warhammer"
+    const price =
+      priceMatch
+        ? parsePrice(
+            priceMatch[1]
+          )
+        : null;
+
+    /*
+      Dostępność:
+      - Do koszyka = dostępne
+      - Powiadom o dostępności = brak
+    */
+
+    const hasNotify =
+      /Powiadom\s+o\s+dostępności/i.test(
+        block
       ) ||
-      context.includes(
-        "horus"
-      ) ||
-      context.includes(
-        "black library"
-      ) ||
-      context.includes(
-        "herezja horusa"
+      /Powiadom\s+o\s+dost/i.test(
+        cleanText(block)
       );
 
-    if (!looksRelevant) {
-      continue;
+    const hasCart =
+      /Do\s+koszyka/i.test(
+        cleanText(block)
+      );
+
+    let available =
+      null;
+
+    if (hasNotify) {
+      available = false;
+    } else if (hasCart) {
+      available = true;
     }
+
+    /*
+      Obraz.
+      Priorytet data-src, bo Pan Mysza
+      używa lazy-load.
+    */
+
+    const dataSrcMatch =
+      block.match(
+        /<img[^>]+data-src=["']([^"']+)["']/i
+      );
+
+    const srcMatch =
+      block.match(
+        /<img[^>]+src=["']([^"']+)["']/i
+      );
+
+    let image =
+      dataSrcMatch?.[1] ||
+      srcMatch?.[1] ||
+      null;
+
+    /*
+      Ignorujemy 1px placeholder.
+    */
+
+    if (
+      image &&
+      image.startsWith(
+        "data:image"
+      )
+    ) {
+      image = null;
+    }
+
+    image =
+      makePanAbsoluteUrl(
+        image
+      );
+
+    /*
+      Kategoria / producent z atrybutów
+      karty produktu.
+    */
+
+    const openingTag =
+      block.slice(
+        0,
+        Math.min(
+          block.length,
+          1000
+        )
+      );
+
+    const categoryMatch =
+      openingTag.match(
+        /data-category=["']([^"']+)["']/i
+      );
+
+    const producerMatch =
+      openingTag.match(
+        /data-producer=["']([^"']+)["']/i
+      );
 
     products.push({
       source:
-        "skupszop",
+        "pan_mysza",
 
-      condition,
+      condition:
+        "new",
 
       title,
 
       price,
 
-      rawPrice,
+      rawPrice:
+        priceMatch?.[0]
+          ? cleanText(
+              priceMatch[0]
+            )
+          : null,
 
       currency:
         "PLN",
 
-      available:
-        price != null,
+      available,
 
       stock:
+        null,
+
+      productId:
+        starts[i]
+          .productId,
+
+      category:
+        categoryMatch?.[1] ||
+        null,
+
+      producer:
+        producerMatch?.[1] ||
         null,
 
       image,
@@ -974,18 +1092,25 @@ function parseSkupPage(html) {
     });
   }
 
+  /*
+    Deduplikacja po URL.
+  */
+
   const unique =
     new Map();
 
-  for (const product of products) {
+  for (
+    const item
+    of products
+  ) {
     if (
       !unique.has(
-        product.url
+        item.url
       )
     ) {
       unique.set(
-        product.url,
-        product
+        item.url,
+        item
       );
     }
   }
@@ -995,99 +1120,74 @@ function parseSkupPage(html) {
   ];
 }
 
-async function fetchSkupCatalogPage(
-  base,
-  page
-) {
-  /*
-    Pierwsza strona bez parametru.
-    Kolejne testujemy z ?p=.
-  */
+async function getPanMyszaCatalog() {
+  const base =
+    "https://panmysza.pl/pl/c/Black-Library/686";
 
-  const url =
-    page === 1
-      ? base
-      : `${base}?p=${page}`;
+  const firstHtml =
+    await fetchHtml(base);
 
-  return await fetchHtml(url);
-}
+  const pageCount =
+    getPanPageCount(
+      firstHtml
+    );
 
-async function getSkupCatalog() {
-  const catalogs = [
-    "https://skupszop.pl/wydawnictwo/black-library",
-    "https://skupszop.pl/wydawnictwo/copernicus-center-press",
+  const all = [
+    ...parsePanMyszaPage(
+      firstHtml
+    ),
   ];
 
-  const all = [];
-
-  /*
-    Na początek max 8 stron na wydawnictwo.
-    Jeśli okaże się, że katalog jest większy,
-    zwiększymy.
-  */
-
-  const MAX_PAGES = 8;
-
-  for (const base of catalogs) {
-    for (
-      let page = 1;
-      page <= MAX_PAGES;
-      page++
-    ) {
-      try {
-        const html =
-          await fetchSkupCatalogPage(
-            base,
-            page
-          );
-
-        const products =
-          parseSkupPage(
-            html
-          );
-
-        all.push(
-          ...products
+  for (
+    let page = 2;
+    page <= pageCount;
+    page++
+  ) {
+    try {
+      const html =
+        await fetchHtml(
+          `${base}/${page}`
         );
 
-        /*
-          Jeśli po pierwszej stronie
-          kolejna nie daje żadnych produktów,
-          kończymy ten katalog.
-        */
-
-        if (
-          page > 1 &&
-          products.length === 0
-        ) {
-          break;
-        }
-
-        await sleep(120);
-
-      } catch (error) {
-        console.error(
-          `SkupSzop ${base} page ${page}`,
-          error.message
+      const products =
+        parsePanMyszaPage(
+          html
         );
 
-        break;
-      }
+      all.push(
+        ...products
+      );
+
+      await sleep(120);
+
+    } catch (error) {
+      console.error(
+        `Pan Mysza page ${page}:`,
+        error.message
+      );
     }
   }
 
   const unique =
     new Map();
 
-  for (const product of all) {
+  for (
+    const item
+    of all
+  ) {
     const key =
-      product.url ||
-      normalize(product.title);
+      item.url ||
+      item.productId ||
+      normalize(
+        item.title
+      );
 
-    if (!unique.has(key)) {
+    if (
+      !unique.has(key)
+    ) {
       unique.set(
         key,
-        product
+        item
       );
     }
   }
@@ -1110,7 +1210,10 @@ function findCatalogOffers(
 ) {
   const matches = [];
 
-  for (const product of catalog) {
+  for (
+    const product
+    of catalog
+  ) {
     const score =
       bestBookScore(
         book,
@@ -1130,61 +1233,97 @@ function findCatalogOffers(
   }
 
   return matches
-    .sort((a, b) => {
-      if (
-        b.matchScore !==
-        a.matchScore
-      ) {
-        return (
-          b.matchScore -
+    .sort(
+      (a, b) => {
+        /*
+          Najpierw najlepsze
+          dopasowanie.
+        */
+
+        if (
+          b.matchScore !==
           a.matchScore
+        ) {
+          return (
+            b.matchScore -
+            a.matchScore
+          );
+        }
+
+        /*
+          Przy tym samym wyniku
+          dostępne przed niedostępnymi.
+        */
+
+        if (
+          a.available === true &&
+          b.available === false
+        ) {
+          return -1;
+        }
+
+        if (
+          a.available === false &&
+          b.available === true
+        ) {
+          return 1;
+        }
+
+        /*
+          Następnie cena.
+        */
+
+        if (
+          a.price == null &&
+          b.price == null
+        ) {
+          return 0;
+        }
+
+        if (
+          a.price == null
+        ) {
+          return 1;
+        }
+
+        if (
+          b.price == null
+        ) {
+          return -1;
+        }
+
+        return (
+          a.price -
+          b.price
         );
       }
-
-      if (
-        a.price == null &&
-        b.price == null
-      ) {
-        return 0;
-      }
-
-      if (
-        a.price == null
-      ) {
-        return 1;
-      }
-
-      if (
-        b.price == null
-      ) {
-        return -1;
-      }
-
-      return (
-        a.price -
-        b.price
-      );
-    })
-    .slice(0, 15);
+    )
+    .slice(
+      0,
+      15
+    );
 }
 
 /*
   ============================================
-  ŁĄCZENIE ŹRÓDEŁ
+  POJEDYNCZA KSIĄŻKA
   ============================================
 */
 
 async function findBook(
   book,
   hegemonCatalog,
-  skupCatalog
+  panCatalog
 ) {
   /*
     ALLEGRO LOKALNIE
   */
 
-  let allegroOffers = [];
-  let allegroError = null;
+  let allegroOffers =
+    [];
+
+  let allegroError =
+    null;
 
   try {
     const raw =
@@ -1192,7 +1331,10 @@ async function findBook(
         book.originalTitle
       );
 
-    for (const offer of raw) {
+    for (
+      const offer
+      of raw
+    ) {
       const score =
         allegroOfferScore(
           book,
@@ -1219,23 +1361,25 @@ async function findBook(
   const allegroUnique =
     new Map();
 
-  for (const offer of allegroOffers) {
+  for (
+    const item
+    of allegroOffers
+  ) {
     if (
       !allegroUnique.has(
-        offer.url
+        item.url
       )
     ) {
       allegroUnique.set(
-        offer.url,
-        offer
+        item.url,
+        item
       );
     }
   }
 
-  allegroOffers =
-    [
-      ...allegroUnique.values(),
-    ];
+  allegroOffers = [
+    ...allegroUnique.values(),
+  ];
 
   /*
     HEGEMON
@@ -1249,90 +1393,67 @@ async function findBook(
     );
 
   /*
-    SKUPSZOP
+    PAN MYSZA
   */
 
-  const skupOffers =
+  const panOffers =
     findCatalogOffers(
       book,
-      skupCatalog,
+      panCatalog,
       65
     );
 
   /*
-    Rozdzielamy SkupSzop
-    na nowe i używane.
+    Najtańsze.
   */
 
-  const skupNewOffers =
-    skupOffers.filter(
-      (offer) =>
-        offer.condition ===
-        "new"
-    );
-
-  const skupUsedOffers =
-    skupOffers.filter(
-      (offer) =>
-        offer.condition !==
-        "new"
-    );
-
   const cheapestAllegro =
-    cheapest(
+    cheapestAvailable(
       allegroOffers
     );
 
   const cheapestHegemon =
-    cheapest(
+    cheapestAvailable(
       hegemonOffers
     );
 
-  const cheapestSkupNew =
-    cheapest(
-      skupNewOffers
-    );
-
-  const cheapestSkupUsed =
-    cheapest(
-      skupUsedOffers
+  const cheapestPan =
+    cheapestAvailable(
+      panOffers
     );
 
   /*
-    NOWE
+    NOWE:
+    nie bierzemy Pan Mysza,
+    jeśli available === false.
   */
 
-  const newCandidates =
-    [
-      cheapestHegemon,
-      cheapestSkupNew,
-    ]
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          a.price -
-          b.price
-      );
+  const newCandidates = [
+    cheapestHegemon,
+    cheapestPan,
+  ]
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        a.price - b.price
+    );
 
   const bestNew =
     newCandidates[0] ||
     null;
 
   /*
-    UŻYWANE
+    UŻYWANE.
   */
 
-  const usedCandidates =
-    [
-      cheapestAllegro,
-      cheapestSkupUsed,
-    ]
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          a.price -
-          b.price
-      );
+  const usedCandidates = [
+    cheapestAllegro,
+  ]
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        a.price - b.price
+    );
 
   const bestUsed =
     usedCandidates[0] ||
@@ -1344,9 +1465,15 @@ async function findBook(
     found:
       allegroOffers.length > 0 ||
       hegemonOffers.length > 0 ||
-      skupOffers.length > 0,
+      panOffers.length > 0,
 
     sources: {
+      /*
+        --------------------------
+        ALLEGRO LOKALNIE
+        --------------------------
+      */
+
       allegro_lokalnie: {
         found:
           allegroOffers.length > 0,
@@ -1357,8 +1484,16 @@ async function findBook(
         offerCount:
           allegroOffers.length,
 
+        availableOfferCount:
+          allegroOffers.filter(
+            (offer) =>
+              offer.available !==
+              false
+          ).length,
+
         lowestPrice:
-          cheapestAllegro?.price ??
+          cheapestAllegro
+            ?.price ??
           null,
 
         offers:
@@ -1368,6 +1503,12 @@ async function findBook(
           ),
       },
 
+      /*
+        --------------------------
+        HEGEMON
+        --------------------------
+      */
+
       hegemon: {
         found:
           hegemonOffers.length > 0,
@@ -1375,45 +1516,61 @@ async function findBook(
         offerCount:
           hegemonOffers.length,
 
+        availableOfferCount:
+          hegemonOffers.filter(
+            (offer) =>
+              offer.available !==
+              false
+          ).length,
+
         lowestPrice:
-          cheapestHegemon?.price ??
+          cheapestHegemon
+            ?.price ??
           null,
 
         offers:
           hegemonOffers,
       },
 
-      skupszop: {
+      /*
+        --------------------------
+        PAN MYSZA
+        --------------------------
+      */
+
+      pan_mysza: {
         found:
-          skupOffers.length > 0,
+          panOffers.length > 0,
 
         offerCount:
-          skupOffers.length,
+          panOffers.length,
+
+        availableOfferCount:
+          panOffers.filter(
+            (offer) =>
+              offer.available ===
+              true
+          ).length,
+
+        unavailableOfferCount:
+          panOffers.filter(
+            (offer) =>
+              offer.available ===
+              false
+          ).length,
 
         lowestPrice:
-          cheapest(
-            skupOffers
-          )?.price ??
-          null,
-
-        newOfferCount:
-          skupNewOffers.length,
-
-        usedOfferCount:
-          skupUsedOffers.length,
-
-        lowestNewPrice:
-          cheapestSkupNew?.price ??
-          null,
-
-        lowestUsedPrice:
-          cheapestSkupUsed?.price ??
+          cheapestPan?.price ??
           null,
 
         offers:
-          skupOffers,
+          panOffers,
       },
     },
+
+    /*
+      Podsumowanie.
+    */
 
     bestUsedPrice:
       bestUsed?.price ??
@@ -1447,7 +1604,9 @@ async function findBook(
   ============================================
 */
 
-export async function GET(request) {
+export async function GET(
+  request
+) {
   try {
     const {
       searchParams,
@@ -1471,22 +1630,27 @@ export async function GET(request) {
       );
 
     if (
-      !Number.isInteger(offset) ||
+      !Number.isInteger(
+        offset
+      ) ||
       offset < 0
     ) {
       offset = 0;
     }
 
     if (
-      !Number.isInteger(limit) ||
+      !Number.isInteger(
+        limit
+      ) ||
       limit < 1
     ) {
       limit = 1;
     }
 
     /*
-      Max 3 głównie ze względu
-      na Allegro Lokalnie.
+      Nie więcej niż 3 książki
+      na jedno wywołanie,
+      ze względu na Allegro Lokalnie.
     */
 
     limit =
@@ -1496,18 +1660,21 @@ export async function GET(request) {
       );
 
     /*
-      Hegemon i SkupSzop pobieramy
-      jako katalogi, tylko raz
-      na cały request.
+      Hegemon oraz Pan Mysza
+      pobieramy równolegle.
+
+      Dzięki next.revalidate=3600
+      kolejne requesty powinny
+      korzystać z cache Vercela.
     */
 
     const [
       hegemonCatalog,
-      skupCatalog,
+      panCatalog,
     ] =
       await Promise.all([
         getHegemonCatalog(),
-        getSkupCatalog(),
+        getPanMyszaCatalog(),
       ]);
 
     const selected =
@@ -1518,17 +1685,25 @@ export async function GET(request) {
 
     const books = [];
 
-    for (const book of selected) {
+    for (
+      const book
+      of selected
+    ) {
       const result =
         await findBook(
           book,
           hegemonCatalog,
-          skupCatalog
+          panCatalog
         );
 
       books.push(
         result
       );
+
+      /*
+        Pauza głównie dla
+        Allegro Lokalnie.
+      */
 
       await sleep(800);
     }
@@ -1547,7 +1722,7 @@ export async function GET(request) {
           sources: [
             "allegro_lokalnie",
             "hegemon",
-            "skupszop",
+            "pan_mysza",
           ],
 
           totalBooks:
@@ -1557,8 +1732,8 @@ export async function GET(request) {
             hegemon:
               hegemonCatalog.length,
 
-            skupszop:
-              skupCatalog.length,
+            pan_mysza:
+              panCatalog.length,
           },
 
           offset,
@@ -1603,14 +1778,23 @@ export async function GET(request) {
     );
 
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        error:
-          "Multi-source search failed",
+    console.error(
+      "books API:",
+      error
+    );
 
-        details:
-          error.message,
-      }),
+    return new Response(
+      JSON.stringify(
+        {
+          error:
+            "Multi-source search failed",
+
+          details:
+            error.message,
+        },
+        null,
+        2
+      ),
 
       {
         status: 500,
