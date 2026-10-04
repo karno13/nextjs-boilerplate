@@ -21,9 +21,9 @@ const HEADERS = {
 };
 
 /*
-  ============================================
+  ============================================================
   HELPERY
-  ============================================
+  ============================================================
 */
 
 function cleanText(value = "") {
@@ -80,12 +80,13 @@ function normalize(value = "") {
 function parsePrice(value) {
   if (!value) return null;
 
-  const match =
-    String(value).match(
-      /(\d[\d\s]*(?:[,.]\d{1,2})?)/
-    );
+  const match = String(value).match(
+    /(\d[\d\s]*(?:[,.]\d{1,2})?)/
+  );
 
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
 
   const number = Number(
     match[1]
@@ -98,42 +99,92 @@ function parsePrice(value) {
     : null;
 }
 
+/*
+  ============================================================
+  DOPASOWANIE TYTUŁÓW
+
+  Ważna zmiana:
+
+  Dla jednowyrazowych tytułów, np.
+
+  Legion
+  Mechanicum
+  Fulgrim
+
+  nie używamy zwykłego includes().
+
+  Dzięki temu:
+  Legion != Legions
+  Legion != Lenovo Legion automatycznie
+  ============================================================
+*/
+
 function scoreMatch(wanted, found) {
   const a = normalize(wanted);
   const b = normalize(found);
 
-  if (!a || !b) return 0;
+  if (!a || !b) {
+    return 0;
+  }
 
   if (a === b) {
     return 100;
   }
 
-  if (b.includes(a)) {
-    return 95;
-  }
+  const wantedWords = a
+    .split(" ")
+    .filter(
+      (word) =>
+        word.length > 2
+    );
 
-  const wantedWords =
-    a
-      .split(" ")
-      .filter(
-        (word) =>
-          word.length > 2
-      );
+  const foundWords = b
+    .split(" ")
+    .filter(Boolean);
 
   if (!wantedWords.length) {
     return 0;
   }
 
-  const foundWords =
-    new Set(
-      b.split(" ")
-    );
+  /*
+    Jedno słowo:
+    musi istnieć jako dokładny token.
+  */
+
+  if (wantedWords.length === 1) {
+    const word = wantedWords[0];
+
+    if (
+      !foundWords.includes(word)
+    ) {
+      return 0;
+    }
+
+    /*
+      Samo jedno słowo nie daje
+      jeszcze wysokiej pewności.
+    */
+
+    return 55;
+  }
+
+  /*
+    Dla wielowyrazowych tytułów
+    pełna fraza nadal jest bardzo mocna.
+  */
+
+  if (b.includes(a)) {
+    return 95;
+  }
+
+  const foundSet =
+    new Set(foundWords);
 
   let matches = 0;
 
   for (const word of wantedWords) {
     if (
-      foundWords.has(word)
+      foundSet.has(word)
     ) {
       matches++;
     }
@@ -146,12 +197,16 @@ function scoreMatch(wanted, found) {
 }
 
 function bestBookScore(book, title) {
-  const scores = [
-    scoreMatch(
-      book.originalTitle,
-      title
-    ),
-  ];
+  const scores = [];
+
+  if (book.originalTitle) {
+    scores.push(
+      scoreMatch(
+        book.originalTitle,
+        title
+      )
+    );
+  }
 
   if (book.polishTitle) {
     scores.push(
@@ -171,6 +226,10 @@ function bestBookScore(book, title) {
       const term
       of book.searchTerms
     ) {
+      if (!term) {
+        continue;
+      }
+
       scores.push(
         scoreMatch(
           term,
@@ -180,8 +239,18 @@ function bestBookScore(book, title) {
     }
   }
 
+  if (!scores.length) {
+    return 0;
+  }
+
   return Math.max(...scores);
 }
+
+/*
+  ============================================================
+  FETCH
+  ============================================================
+*/
 
 async function fetchHtml(url) {
   const response =
@@ -212,6 +281,12 @@ async function fetchHtml(url) {
   return await response.text();
 }
 
+/*
+  ============================================================
+  CENA
+  ============================================================
+*/
+
 function cheapest(offers) {
   return (
     offers
@@ -226,13 +301,23 @@ function cheapest(offers) {
   );
 }
 
+/*
+  Ważne:
+  oferta sklepu trafia do "bestNew"
+  tylko wtedy, gdy dostępność została
+  potwierdzona jako TRUE.
+
+  null = nie wiemy
+  false = niedostępne
+*/
+
 function cheapestAvailable(offers) {
   return (
     offers
       .filter(
         (offer) =>
           offer.price != null &&
-          offer.available !== false
+          offer.available === true
       )
       .sort(
         (a, b) =>
@@ -242,9 +327,9 @@ function cheapestAvailable(offers) {
 }
 
 /*
-  ============================================
+  ============================================================
   ALLEGRO LOKALNIE
-  ============================================
+  ============================================================
 */
 
 function allegroOfferScore(
@@ -262,54 +347,151 @@ function allegroOfferScore(
       result.title
     );
 
-  const bonusWords = [
+  const titleWords =
+    normalize(
+      book.originalTitle
+    )
+      .split(" ")
+      .filter(
+        (word) =>
+          word.length > 2
+      );
+
+  /*
+    Słowa zwiększające pewność,
+    że to faktycznie książka Warhammer.
+  */
+
+  const positiveContext = [
     "warhammer",
     "black library",
     "horus heresy",
+    "herezja horusa",
     "40k",
     "40000",
     "games workshop",
     "ksiazka",
     "powiesc",
+    "paperback",
+    "hardback",
+    "novel",
   ];
 
-  for (const word of bonusWords) {
+  let hasBookContext = false;
+
+  for (
+    const word
+    of positiveContext
+  ) {
     if (
       text.includes(
         normalize(word)
       )
     ) {
+      hasBookContext = true;
+
       score += 10;
     }
   }
 
+  /*
+    Krótkie/jednowyrazowe tytuły
+    muszą mieć dodatkowy kontekst.
+
+    Legion
+    Mechanicum
+    Fulgrim
+    Nemesis
+    itd.
+  */
+
+  if (
+    titleWords.length === 1 &&
+    !hasBookContext
+  ) {
+    score -= 50;
+  }
+
+  /*
+    Mocne kary dla rzeczy,
+    które ewidentnie nie są książkami.
+  */
+
   const badWords = [
+    /*
+      Kolekcjonerstwo
+    */
     "banknot",
     "banknoty",
     "moneta",
     "monety",
+
+    /*
+      TCG / zabawki
+    */
     "booster",
     "boostery",
     "pokemon",
     "lego",
+
+    /*
+      Gadżety
+    */
     "koszulka",
     "plakat",
     "kubek",
     "brelok",
     "naklejka",
     "puzzle",
+
+    /*
+      Figurki / bitewniaki
+    */
     "figurka",
     "figurki",
     "miniatura",
+    "miniatury",
+    "battle group",
+    "battleforce",
+    "destructors",
+    "myrmidon",
+    "army set",
+    "zestaw figurek",
+    "model do gry",
+    "modele do gry",
+
+    /*
+      Elektronika
+    */
+    "lenovo",
+    "laptop",
+    "komputer",
+    "monitor",
+    "konsola",
+    "zasilacz",
+    "ssd",
+    "rtx",
+    "geforce",
+    "ryzen",
+
+    /*
+      Inne
+    */
+    "world of warcraft",
+    "wow gold",
+    "bmx",
   ];
 
-  for (const word of badWords) {
+  for (
+    const word
+    of badWords
+  ) {
     if (
       text.includes(
         normalize(word)
       )
     ) {
-      score -= 60;
+      score -= 80;
     }
   }
 
@@ -366,7 +548,9 @@ async function searchLokalnie(query) {
       match[2];
 
     const fullText =
-      cleanText(anchorHtml);
+      cleanText(
+        anchorHtml
+      );
 
     let priceMatch =
       fullText.match(
@@ -437,6 +621,12 @@ async function searchLokalnie(query) {
       currency:
         "PLN",
 
+      /*
+        Oferta Allegro Lokalnie
+        występująca na stronie wyników
+        jest traktowana jako aktywna.
+      */
+
       available:
         true,
 
@@ -450,16 +640,23 @@ async function searchLokalnie(query) {
     });
 
     if (
-      results.length >= 50
+      results.length >= 60
     ) {
       break;
     }
   }
 
+  /*
+    Deduplikacja URL.
+  */
+
   const unique =
     new Map();
 
-  for (const item of results) {
+  for (
+    const item
+    of results
+  ) {
     if (
       !unique.has(
         item.url
@@ -478,9 +675,9 @@ async function searchLokalnie(query) {
 }
 
 /*
-  ============================================
+  ============================================================
   HEGEMON
-  ============================================
+  ============================================================
 */
 
 function parseHegemonPage(html) {
@@ -550,6 +747,22 @@ function parseHegemonPage(html) {
           )
         : null;
 
+    /*
+      Jeśli mamy liczbę sztuk,
+      dostępność jest pewna.
+
+      Jeśli nie mamy danych o stanie,
+      zostawiamy null.
+    */
+
+    let available =
+      null;
+
+    if (stock != null) {
+      available =
+        stock > 0;
+    }
+
     products.push({
       source:
         "hegemon",
@@ -570,10 +783,7 @@ function parseHegemonPage(html) {
 
       stock,
 
-      available:
-        stock == null
-          ? null
-          : stock > 0,
+      available,
 
       image:
         imageMatch?.[1] ||
@@ -602,7 +812,9 @@ function getHegemonPageCount(html) {
 
     if (match) {
       const total =
-        Number(match[1]);
+        Number(
+          match[1]
+        );
 
       if (
         Number.isFinite(total) &&
@@ -654,6 +866,7 @@ async function getHegemonCatalog() {
       );
 
       await sleep(120);
+
     } catch (error) {
       console.error(
         `Hegemon page ${page}:`,
@@ -665,7 +878,10 @@ async function getHegemonCatalog() {
   const unique =
     new Map();
 
-  for (const item of all) {
+  for (
+    const item
+    of all
+  ) {
     const key =
       item.url ||
       normalize(
@@ -688,17 +904,9 @@ async function getHegemonCatalog() {
 }
 
 /*
-  ============================================
+  ============================================================
   PAN MYSZA
-  ============================================
-
-  Kategoria:
-  https://panmysza.pl/pl/c/Black-Library/686
-
-  Kolejne strony:
-  /686/2
-  /686/3
-  itd.
+  ============================================================
 */
 
 function makePanAbsoluteUrl(
@@ -756,19 +964,21 @@ function getPanPageCount(html) {
     null
   ) {
     const page =
-      Number(match[1]);
+      Number(
+        match[1]
+      );
 
     if (
       Number.isFinite(page) &&
       page > maxPage
     ) {
-      maxPage = page;
+      maxPage =
+        page;
     }
   }
 
   /*
-    Ochrona przed przypadkowym
-    złapaniem absurdalnej liczby.
+    Bezpieczny limit.
   */
 
   return Math.min(
@@ -782,11 +992,6 @@ function getPanPageCount(html) {
 
 function parsePanMyszaPage(html) {
   const products = [];
-
-  /*
-    Szukamy początków kart:
-    <div data-product-id="...">
-  */
 
   const startRegex =
     /<div\b[^>]*data-product-id=["']([^"']+)["'][^>]*>/gi;
@@ -820,7 +1025,9 @@ function parsePanMyszaPage(html) {
     const end =
       i + 1 <
       starts.length
-        ? starts[i + 1].index
+        ? starts[
+            i + 1
+          ].index
         : Math.min(
             html.length,
             start + 15000
@@ -833,15 +1040,15 @@ function parsePanMyszaPage(html) {
       );
 
     /*
-      Link produktu.
-      W Shoperze ma format:
-      /pl/p/Tytul/12345
+      Link + title.
     */
 
-    const linkMatch =
+    const firstLink =
       block.match(
         /<a[^>]+href=["']([^"']*\/pl\/p\/[^"']+)["'][^>]*title=["']([^"']+)["'][^>]*>/i
-      ) ||
+      );
+
+    const secondLink =
       block.match(
         /<a[^>]+title=["']([^"']+)["'][^>]*href=["']([^"']*\/pl\/p\/[^"']+)["'][^>]*>/i
       );
@@ -849,34 +1056,22 @@ function parsePanMyszaPage(html) {
     let url = null;
     let title = null;
 
-    if (linkMatch) {
-      /*
-        Obsługujemy obie kolejności
-        atrybutów.
-      */
+    if (firstLink) {
+      url =
+        firstLink[1];
 
-      if (
-        linkMatch[1]
-          .includes(
-            "/pl/p/"
-          )
-      ) {
-        url =
-          linkMatch[1];
+      title =
+        firstLink[2];
+    } else if (secondLink) {
+      title =
+        secondLink[1];
 
-        title =
-          linkMatch[2];
-      } else {
-        title =
-          linkMatch[1];
-
-        url =
-          linkMatch[2];
-      }
+      url =
+        secondLink[2];
     }
 
     /*
-      Awaryjnie osobno href + title.
+      Awaryjny href.
     */
 
     if (!url) {
@@ -889,6 +1084,10 @@ function parsePanMyszaPage(html) {
         hrefMatch?.[1] ||
         null;
     }
+
+    /*
+      Awaryjny tytuł.
+    */
 
     if (!title) {
       const titleMatch =
@@ -903,6 +1102,10 @@ function parsePanMyszaPage(html) {
             )
           : null;
     }
+
+    /*
+      Jeszcze alt obrazka.
+    */
 
     if (!title) {
       const altMatch =
@@ -937,12 +1140,7 @@ function parsePanMyszaPage(html) {
       );
 
     /*
-      Cena jest zwykle:
-      <em>44,00 zł</em>
-
-      Nie polegamy na samym napisie "zł",
-      bo w debug HTML mieliśmy mojibake:
-      zÅ‚.
+      Cena.
     */
 
     const priceMatch =
@@ -958,37 +1156,42 @@ function parsePanMyszaPage(html) {
         : null;
 
     /*
-      Dostępność:
-      - Do koszyka = dostępne
-      - Powiadom o dostępności = brak
+      Dostępność.
+
+      "Powiadom o dostępności"
+      ma pierwszeństwo przed koszykiem.
     */
 
+    const blockText =
+      cleanText(block);
+
     const hasNotify =
-      /Powiadom\s+o\s+dostępności/i.test(
-        block
-      ) ||
-      /Powiadom\s+o\s+dost/i.test(
-        cleanText(block)
+      /powiadom\s+o\s+dost/i.test(
+        normalize(
+          blockText
+        )
       );
 
     const hasCart =
-      /Do\s+koszyka/i.test(
-        cleanText(block)
+      /do\s+koszyka/i.test(
+        normalize(
+          blockText
+        )
       );
 
     let available =
       null;
 
     if (hasNotify) {
-      available = false;
+      available =
+        false;
     } else if (hasCart) {
-      available = true;
+      available =
+        true;
     }
 
     /*
-      Obraz.
-      Priorytet data-src, bo Pan Mysza
-      używa lazy-load.
+      Zdjęcie.
     */
 
     const dataSrcMatch =
@@ -1006,10 +1209,6 @@ function parsePanMyszaPage(html) {
       srcMatch?.[1] ||
       null;
 
-    /*
-      Ignorujemy 1px placeholder.
-    */
-
     if (
       image &&
       image.startsWith(
@@ -1025,8 +1224,7 @@ function parsePanMyszaPage(html) {
       );
 
     /*
-      Kategoria / producent z atrybutów
-      karty produktu.
+      Atrybuty karty produktu.
     */
 
     const openingTag =
@@ -1093,7 +1291,7 @@ function parsePanMyszaPage(html) {
   }
 
   /*
-    Deduplikacja po URL.
+    Deduplikacja.
   */
 
   const unique =
@@ -1149,13 +1347,10 @@ async function getPanMyszaCatalog() {
           `${base}/${page}`
         );
 
-      const products =
-        parsePanMyszaPage(
-          html
-        );
-
       all.push(
-        ...products
+        ...parsePanMyszaPage(
+          html
+        )
       );
 
       await sleep(120);
@@ -1198,9 +1393,9 @@ async function getPanMyszaCatalog() {
 }
 
 /*
-  ============================================
+  ============================================================
   DOPASOWYWANIE KATALOGÓW
-  ============================================
+  ============================================================
 */
 
 function findCatalogOffers(
@@ -1221,13 +1416,16 @@ function findCatalogOffers(
       );
 
     if (
-      score >= minimumScore
+      score >=
+      minimumScore
     ) {
       matches.push({
         ...product,
 
         matchScore:
-          Math.round(score),
+          Math.round(
+            score
+          ),
       });
     }
   }
@@ -1236,8 +1434,7 @@ function findCatalogOffers(
     .sort(
       (a, b) => {
         /*
-          Najpierw najlepsze
-          dopasowanie.
+          Najpierw jakość dopasowania.
         */
 
         if (
@@ -1251,26 +1448,36 @@ function findCatalogOffers(
         }
 
         /*
-          Przy tym samym wyniku
-          dostępne przed niedostępnymi.
+          Potwierdzona dostępność
+          przed nieznaną/niedostępną.
         */
 
-        if (
-          a.available === true &&
-          b.available === false
-        ) {
-          return -1;
-        }
+        const aAvailability =
+          a.available === true
+            ? 2
+            : a.available === null
+              ? 1
+              : 0;
+
+        const bAvailability =
+          b.available === true
+            ? 2
+            : b.available === null
+              ? 1
+              : 0;
 
         if (
-          a.available === false &&
-          b.available === true
+          aAvailability !==
+          bAvailability
         ) {
-          return 1;
+          return (
+            bAvailability -
+            aAvailability
+          );
         }
 
         /*
-          Następnie cena.
+          Cena.
         */
 
         if (
@@ -1305,9 +1512,9 @@ function findCatalogOffers(
 }
 
 /*
-  ============================================
+  ============================================================
   POJEDYNCZA KSIĄŻKA
-  ============================================
+  ============================================================
 */
 
 async function findBook(
@@ -1316,14 +1523,13 @@ async function findBook(
   panCatalog
 ) {
   /*
+    -------------------------
     ALLEGRO LOKALNIE
+    -------------------------
   */
 
-  let allegroOffers =
-    [];
-
-  let allegroError =
-    null;
+  let allegroOffers = [];
+  let allegroError = null;
 
   try {
     const raw =
@@ -1358,6 +1564,10 @@ async function findBook(
       error.message;
   }
 
+  /*
+    Deduplikacja Allegro.
+  */
+
   const allegroUnique =
     new Map();
 
@@ -1382,7 +1592,46 @@ async function findBook(
   ];
 
   /*
+    Sortujemy Allegro:
+    wynik dopasowania,
+    potem cena.
+  */
+
+  allegroOffers.sort(
+    (a, b) => {
+      if (
+        b.matchScore !==
+        a.matchScore
+      ) {
+        return (
+          b.matchScore -
+          a.matchScore
+        );
+      }
+
+      if (
+        a.price == null
+      ) {
+        return 1;
+      }
+
+      if (
+        b.price == null
+      ) {
+        return -1;
+      }
+
+      return (
+        a.price -
+        b.price
+      );
+    }
+  );
+
+  /*
+    -------------------------
     HEGEMON
+    -------------------------
   */
 
   const hegemonOffers =
@@ -1393,7 +1642,9 @@ async function findBook(
     );
 
   /*
+    -------------------------
     PAN MYSZA
+    -------------------------
   */
 
   const panOffers =
@@ -1404,18 +1655,30 @@ async function findBook(
     );
 
   /*
-    Najtańsze.
+    ========================================================
+    NAJTAŃSZE OFERTY
+    ========================================================
   */
 
   const cheapestAllegro =
-    cheapestAvailable(
+    cheapest(
       allegroOffers
     );
+
+  /*
+    Hegemon:
+    tylko potwierdzone available === true.
+  */
 
   const cheapestHegemon =
     cheapestAvailable(
       hegemonOffers
     );
+
+  /*
+    Pan Mysza:
+    tylko potwierdzone available === true.
+  */
 
   const cheapestPan =
     cheapestAvailable(
@@ -1423,9 +1686,7 @@ async function findBook(
     );
 
   /*
-    NOWE:
-    nie bierzemy Pan Mysza,
-    jeśli available === false.
+    NOWE
   */
 
   const newCandidates = [
@@ -1435,7 +1696,8 @@ async function findBook(
     .filter(Boolean)
     .sort(
       (a, b) =>
-        a.price - b.price
+        a.price -
+        b.price
     );
 
   const bestNew =
@@ -1443,7 +1705,7 @@ async function findBook(
     null;
 
   /*
-    UŻYWANE.
+    UŻYWANE
   */
 
   const usedCandidates = [
@@ -1452,15 +1714,30 @@ async function findBook(
     .filter(Boolean)
     .sort(
       (a, b) =>
-        a.price - b.price
+        a.price -
+        b.price
     );
 
   const bestUsed =
     usedCandidates[0] ||
     null;
 
+  /*
+    ========================================================
+    ODPOWIEDŹ DLA KSIĄŻKI
+    ========================================================
+  */
+
   return {
     ...book,
+
+    /*
+      found oznacza:
+      znaleźliśmy przynajmniej
+      jedno sensowne dopasowanie.
+
+      Nie musi być dostępne.
+    */
 
     found:
       allegroOffers.length > 0 ||
@@ -1469,9 +1746,9 @@ async function findBook(
 
     sources: {
       /*
-        --------------------------
+        -------------------------
         ALLEGRO LOKALNIE
-        --------------------------
+        -------------------------
       */
 
       allegro_lokalnie: {
@@ -1487,8 +1764,8 @@ async function findBook(
         availableOfferCount:
           allegroOffers.filter(
             (offer) =>
-              offer.available !==
-              false
+              offer.available ===
+              true
           ).length,
 
         lowestPrice:
@@ -1504,9 +1781,9 @@ async function findBook(
       },
 
       /*
-        --------------------------
+        -------------------------
         HEGEMON
-        --------------------------
+        -------------------------
       */
 
       hegemon: {
@@ -1516,12 +1793,35 @@ async function findBook(
         offerCount:
           hegemonOffers.length,
 
+        /*
+          Tylko TRUE.
+          null nie jest liczone.
+        */
+
         availableOfferCount:
           hegemonOffers.filter(
             (offer) =>
-              offer.available !==
+              offer.available ===
+              true
+          ).length,
+
+        unknownAvailabilityCount:
+          hegemonOffers.filter(
+            (offer) =>
+              offer.available == null
+          ).length,
+
+        unavailableOfferCount:
+          hegemonOffers.filter(
+            (offer) =>
+              offer.available ===
               false
           ).length,
+
+        /*
+          lowestPrice oznacza od teraz
+          najtańszą POTWIERDZONĄ dostępną ofertę.
+        */
 
         lowestPrice:
           cheapestHegemon
@@ -1533,9 +1833,9 @@ async function findBook(
       },
 
       /*
-        --------------------------
+        -------------------------
         PAN MYSZA
-        --------------------------
+        -------------------------
       */
 
       pan_mysza: {
@@ -1552,6 +1852,12 @@ async function findBook(
               true
           ).length,
 
+        unknownAvailabilityCount:
+          panOffers.filter(
+            (offer) =>
+              offer.available == null
+          ).length,
+
         unavailableOfferCount:
           panOffers.filter(
             (offer) =>
@@ -1560,7 +1866,8 @@ async function findBook(
           ).length,
 
         lowestPrice:
-          cheapestPan?.price ??
+          cheapestPan
+            ?.price ??
           null,
 
         offers:
@@ -1569,7 +1876,9 @@ async function findBook(
     },
 
     /*
-      Podsumowanie.
+      ======================================================
+      NAJLEPSZA UŻYWANA
+      ======================================================
     */
 
     bestUsedPrice:
@@ -1583,6 +1892,14 @@ async function findBook(
     bestUsedUrl:
       bestUsed?.url ??
       null,
+
+    /*
+      ======================================================
+      NAJLEPSZA NOWA
+      ======================================================
+
+      Tylko potwierdzone available === true.
+    */
 
     bestNewPrice:
       bestNew?.price ??
@@ -1599,9 +1916,9 @@ async function findBook(
 }
 
 /*
-  ============================================
+  ============================================================
   API
-  ============================================
+  ============================================================
 */
 
 export async function GET(
@@ -1629,6 +1946,10 @@ export async function GET(
         ) || 1
       );
 
+    /*
+      Walidacja offset.
+    */
+
     if (
       !Number.isInteger(
         offset
@@ -1637,6 +1958,10 @@ export async function GET(
     ) {
       offset = 0;
     }
+
+    /*
+      Walidacja limit.
+    */
 
     if (
       !Number.isInteger(
@@ -1648,9 +1973,11 @@ export async function GET(
     }
 
     /*
-      Nie więcej niż 3 książki
-      na jedno wywołanie,
-      ze względu na Allegro Lokalnie.
+      Maksymalnie 3 książki
+      na jeden request.
+
+      Główny powód:
+      Allegro Lokalnie.
     */
 
     limit =
@@ -1660,12 +1987,12 @@ export async function GET(
       );
 
     /*
-      Hegemon oraz Pan Mysza
-      pobieramy równolegle.
+      ========================================================
+      KATALOGI SKLEPÓW
 
-      Dzięki next.revalidate=3600
-      kolejne requesty powinny
-      korzystać z cache Vercela.
+      Hegemon i Pan Mysza pobieramy
+      raz na cały request.
+      ========================================================
     */
 
     const [
@@ -1676,6 +2003,10 @@ export async function GET(
         getHegemonCatalog(),
         getPanMyszaCatalog(),
       ]);
+
+    /*
+      Książki do przetworzenia.
+    */
 
     const selected =
       BOOKS.slice(
@@ -1701,8 +2032,7 @@ export async function GET(
       );
 
       /*
-        Pauza głównie dla
-        Allegro Lokalnie.
+        Pauza dla Allegro Lokalnie.
       */
 
       await sleep(800);
@@ -1711,6 +2041,12 @@ export async function GET(
     const nextOffset =
       offset +
       books.length;
+
+    /*
+      ========================================================
+      RESPONSE
+      ========================================================
+    */
 
     return new Response(
       JSON.stringify(
