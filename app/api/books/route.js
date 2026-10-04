@@ -102,20 +102,6 @@ function parsePrice(value) {
 /*
   ============================================================
   DOPASOWANIE TYTUŁÓW
-
-  Ważna zmiana:
-
-  Dla jednowyrazowych tytułów, np.
-
-  Legion
-  Mechanicum
-  Fulgrim
-
-  nie używamy zwykłego includes().
-
-  Dzięki temu:
-  Legion != Legions
-  Legion != Lenovo Legion automatycznie
   ============================================================
 */
 
@@ -147,12 +133,15 @@ function scoreMatch(wanted, found) {
   }
 
   /*
-    Jedno słowo:
-    musi istnieć jako dokładny token.
+    Jednowyrazowe tytuły:
+    wymagamy dokładnego tokenu.
+
+    Legion != Legions
   */
 
   if (wantedWords.length === 1) {
-    const word = wantedWords[0];
+    const word =
+      wantedWords[0];
 
     if (
       !foundWords.includes(word)
@@ -160,17 +149,11 @@ function scoreMatch(wanted, found) {
       return 0;
     }
 
-    /*
-      Samo jedno słowo nie daje
-      jeszcze wysokiej pewności.
-    */
-
     return 55;
   }
 
   /*
-    Dla wielowyrazowych tytułów
-    pełna fraza nadal jest bardzo mocna.
+    Tytuły wielowyrazowe.
   */
 
   if (b.includes(a)) {
@@ -248,6 +231,169 @@ function bestBookScore(book, title) {
 
 /*
   ============================================================
+  MATCHER DLA ZAUFANYCH KATALOGÓW KSIĄŻKOWYCH
+
+  Hegemon i Pan Mysza są katalogami książek,
+  więc możemy bezpieczniej traktować krótkie tytuły.
+
+  Przykład:
+  HORUS HERESY: MECHANICUM (PB)
+  powinno pasować do Mechanicum.
+
+  Ale:
+  SHATTERED LEGIONS
+  nie powinno pasować do Legion.
+  ============================================================
+*/
+
+function trustedCatalogBookScore(book, title) {
+  const normalTitle =
+    normalize(title);
+
+  const candidates = [
+    book.originalTitle,
+    book.polishTitle,
+    ...(Array.isArray(
+      book.searchTerms
+    )
+      ? book.searchTerms
+      : []),
+  ]
+    .filter(Boolean)
+    .map(normalize);
+
+  let best = 0;
+
+  for (
+    const candidate
+    of candidates
+  ) {
+    if (!candidate) {
+      continue;
+    }
+
+    const wantedWords =
+      candidate
+        .split(" ")
+        .filter(
+          (word) =>
+            word.length > 2
+        );
+
+    /*
+      Wielowyrazowe:
+      standardowy matcher.
+    */
+
+    if (
+      wantedWords.length > 1
+    ) {
+      best =
+        Math.max(
+          best,
+          scoreMatch(
+            candidate,
+            normalTitle
+          )
+        );
+
+      continue;
+    }
+
+    /*
+      Jednowyrazowe.
+    */
+
+    const wanted =
+      wantedWords[0];
+
+    if (!wanted) {
+      continue;
+    }
+
+    const foundWords =
+      normalTitle
+        .split(" ")
+        .filter(Boolean);
+
+    /*
+      Musi istnieć dokładny token.
+    */
+
+    if (
+      !foundWords.includes(
+        wanted
+      )
+    ) {
+      continue;
+    }
+
+    /*
+      Typowe dodatki katalogowe,
+      które nie są częścią właściwego tytułu.
+    */
+
+    const harmlessWords =
+      new Set([
+        "horus",
+        "heresy",
+        "the",
+        "warhammer",
+        "40000",
+        "40k",
+
+        "pb",
+        "hb",
+        "eng",
+
+        "paperback",
+        "hardback",
+        "softback",
+
+        "edition",
+        "novel",
+        "book",
+      ]);
+
+    const meaningfulOtherWords =
+      foundWords.filter(
+        (word) =>
+          word !== wanted &&
+          !harmlessWords.has(word)
+      );
+
+    /*
+      HORUS HERESY MECHANICUM PB
+      => 95
+
+      PODZIELONY LEGION
+      => ma dodatkowe istotne słowo
+      => tylko 55
+    */
+
+    if (
+      meaningfulOtherWords.length ===
+      0
+    ) {
+      best =
+        Math.max(
+          best,
+          95
+        );
+    } else {
+      best =
+        Math.max(
+          best,
+          55
+        );
+    }
+  }
+
+  return best;
+}
+
+/*
+  ============================================================
   FETCH
   ============================================================
 */
@@ -283,7 +429,7 @@ async function fetchHtml(url) {
 
 /*
   ============================================================
-  CENA
+  CENY
   ============================================================
 */
 
@@ -296,20 +442,11 @@ function cheapest(offers) {
       )
       .sort(
         (a, b) =>
-          a.price - b.price
+          a.price -
+          b.price
       )[0] || null
   );
 }
-
-/*
-  Ważne:
-  oferta sklepu trafia do "bestNew"
-  tylko wtedy, gdy dostępność została
-  potwierdzona jako TRUE.
-
-  null = nie wiemy
-  false = niedostępne
-*/
 
 function cheapestAvailable(offers) {
   return (
@@ -321,7 +458,8 @@ function cheapestAvailable(offers) {
       )
       .sort(
         (a, b) =>
-          a.price - b.price
+          a.price -
+          b.price
       )[0] || null
   );
 }
@@ -347,19 +485,26 @@ function allegroOfferScore(
       result.title
     );
 
-  const titleWords =
+  const wanted =
     normalize(
       book.originalTitle
-    )
+    );
+
+  const wantedWords =
+    wanted
       .split(" ")
       .filter(
         (word) =>
           word.length > 2
       );
 
+  const foundWords =
+    text
+      .split(" ")
+      .filter(Boolean);
+
   /*
-    Słowa zwiększające pewność,
-    że to faktycznie książka Warhammer.
+    Pozytywny kontekst książkowy.
   */
 
   const positiveContext = [
@@ -380,41 +525,120 @@ function allegroOfferScore(
   let hasBookContext = false;
 
   for (
-    const word
+    const context
     of positiveContext
   ) {
     if (
       text.includes(
-        normalize(word)
+        normalize(context)
       )
     ) {
       hasBookContext = true;
-
       score += 10;
     }
   }
 
   /*
-    Krótkie/jednowyrazowe tytuły
-    muszą mieć dodatkowy kontekst.
-
-    Legion
-    Mechanicum
-    Fulgrim
-    Nemesis
-    itd.
+    ========================================================
+    KRÓTKIE / JEDNOWYRAZOWE TYTUŁY
+    ========================================================
   */
 
   if (
-    titleWords.length === 1 &&
-    !hasBookContext
+    wantedWords.length === 1
   ) {
-    score -= 50;
+    const word =
+      wantedWords[0];
+
+    const exactTokenIndex =
+      foundWords.indexOf(
+        word
+      );
+
+    /*
+      Legion != Legions
+    */
+
+    if (
+      exactTokenIndex === -1
+    ) {
+      return 0;
+    }
+
+    /*
+      Bez kontekstu Warhammer / książka
+      takie słowo jest zbyt ogólne.
+    */
+
+    if (!hasBookContext) {
+      score -= 60;
+    }
+
+    /*
+      Jeśli tytuł jest na początku,
+      zwiększamy pewność.
+    */
+
+    if (
+      exactTokenIndex === 0
+    ) {
+      score += 30;
+
+    } else if (
+      exactTokenIndex <= 2
+    ) {
+      score += 15;
+
+    } else {
+      /*
+        np. "Szramy Podzielony Legion"
+      */
+
+      score -= 40;
+    }
+
+    /*
+      Sprawdzamy słowo bezpośrednio
+      przed tytułem.
+
+      "Podzielony Legion"
+      to inny tytuł niż "Legion".
+    */
+
+    if (
+      exactTokenIndex > 0
+    ) {
+      const previousWord =
+        foundWords[
+          exactTokenIndex - 1
+        ];
+
+      const safePreviousWords =
+        new Set([
+          "warhammer",
+          "heresy",
+          "horusa",
+          "horus",
+          "ksiazka",
+          "powiesc",
+          "tom",
+        ]);
+
+      if (
+        previousWord &&
+        !safePreviousWords.has(
+          previousWord
+        )
+      ) {
+        score -= 35;
+      }
+    }
   }
 
   /*
-    Mocne kary dla rzeczy,
-    które ewidentnie nie są książkami.
+    ========================================================
+    EWIDENTNE NIE-KSIĄŻKI
+    ========================================================
   */
 
   const badWords = [
@@ -427,16 +651,16 @@ function allegroOfferScore(
     "monety",
 
     /*
-      TCG / zabawki
+      TCG
     */
     "booster",
     "boostery",
     "pokemon",
-    "lego",
 
     /*
-      Gadżety
+      Zabawki / gadżety
     */
+    "lego",
     "koszulka",
     "plakat",
     "kubek",
@@ -483,12 +707,12 @@ function allegroOfferScore(
   ];
 
   for (
-    const word
+    const bad
     of badWords
   ) {
     if (
       text.includes(
-        normalize(word)
+        normalize(bad)
       )
     ) {
       score -= 80;
@@ -621,12 +845,6 @@ async function searchLokalnie(query) {
       currency:
         "PLN",
 
-      /*
-        Oferta Allegro Lokalnie
-        występująca na stronie wyników
-        jest traktowana jako aktywna.
-      */
-
       available:
         true,
 
@@ -645,10 +863,6 @@ async function searchLokalnie(query) {
       break;
     }
   }
-
-  /*
-    Deduplikacja URL.
-  */
 
   const unique =
     new Map();
@@ -746,14 +960,6 @@ function parseHegemonPage(html) {
             stockMatch[1]
           )
         : null;
-
-    /*
-      Jeśli mamy liczbę sztuk,
-      dostępność jest pewna.
-
-      Jeśli nie mamy danych o stanie,
-      zostawiamy null.
-    */
 
     let available =
       null;
@@ -977,10 +1183,6 @@ function getPanPageCount(html) {
     }
   }
 
-  /*
-    Bezpieczny limit.
-  */
-
   return Math.min(
     Math.max(
       maxPage,
@@ -1039,10 +1241,6 @@ function parsePanMyszaPage(html) {
         end
       );
 
-    /*
-      Link + title.
-    */
-
     const firstLink =
       block.match(
         /<a[^>]+href=["']([^"']*\/pl\/p\/[^"']+)["'][^>]*title=["']([^"']+)["'][^>]*>/i
@@ -1062,17 +1260,16 @@ function parsePanMyszaPage(html) {
 
       title =
         firstLink[2];
-    } else if (secondLink) {
+
+    } else if (
+      secondLink
+    ) {
       title =
         secondLink[1];
 
       url =
         secondLink[2];
     }
-
-    /*
-      Awaryjny href.
-    */
 
     if (!url) {
       const hrefMatch =
@@ -1084,10 +1281,6 @@ function parsePanMyszaPage(html) {
         hrefMatch?.[1] ||
         null;
     }
-
-    /*
-      Awaryjny tytuł.
-    */
 
     if (!title) {
       const titleMatch =
@@ -1102,10 +1295,6 @@ function parsePanMyszaPage(html) {
             )
           : null;
     }
-
-    /*
-      Jeszcze alt obrazka.
-    */
 
     if (!title) {
       const altMatch =
@@ -1139,10 +1328,6 @@ function parsePanMyszaPage(html) {
         url
       );
 
-    /*
-      Cena.
-    */
-
     const priceMatch =
       block.match(
         /<em[^>]*>\s*(\d[\d\s]*[,.]\d{2})[\s\S]*?<\/em>/i
@@ -1155,28 +1340,22 @@ function parsePanMyszaPage(html) {
           )
         : null;
 
-    /*
-      Dostępność.
-
-      "Powiadom o dostępności"
-      ma pierwszeństwo przed koszykiem.
-    */
-
     const blockText =
-      cleanText(block);
+      normalize(
+        cleanText(block)
+      );
 
     const hasNotify =
-      /powiadom\s+o\s+dost/i.test(
-        normalize(
-          blockText
-        )
+      blockText.includes(
+        "powiadom o dostepnosci"
+      ) ||
+      blockText.includes(
+        "powiadom o dost"
       );
 
     const hasCart =
-      /do\s+koszyka/i.test(
-        normalize(
-          blockText
-        )
+      blockText.includes(
+        "do koszyka"
       );
 
     let available =
@@ -1189,10 +1368,6 @@ function parsePanMyszaPage(html) {
       available =
         true;
     }
-
-    /*
-      Zdjęcie.
-    */
 
     const dataSrcMatch =
       block.match(
@@ -1222,10 +1397,6 @@ function parsePanMyszaPage(html) {
       makePanAbsoluteUrl(
         image
       );
-
-    /*
-      Atrybuty karty produktu.
-    */
 
     const openingTag =
       block.slice(
@@ -1289,10 +1460,6 @@ function parsePanMyszaPage(html) {
       url,
     });
   }
-
-  /*
-    Deduplikacja.
-  */
 
   const unique =
     new Map();
@@ -1410,7 +1577,7 @@ function findCatalogOffers(
     of catalog
   ) {
     const score =
-      bestBookScore(
+      trustedCatalogBookScore(
         book,
         product.title
       );
@@ -1448,21 +1615,20 @@ function findCatalogOffers(
         }
 
         /*
-          Potwierdzona dostępność
-          przed nieznaną/niedostępną.
+          Dostępność.
         */
 
         const aAvailability =
           a.available === true
             ? 2
-            : a.available === null
+            : a.available == null
               ? 1
               : 0;
 
         const bAvailability =
           b.available === true
             ? 2
-            : b.available === null
+            : b.available == null
               ? 1
               : 0;
 
@@ -1565,7 +1731,7 @@ async function findBook(
   }
 
   /*
-    Deduplikacja Allegro.
+    Deduplikacja.
   */
 
   const allegroUnique =
@@ -1592,9 +1758,7 @@ async function findBook(
   ];
 
   /*
-    Sortujemy Allegro:
-    wynik dopasowania,
-    potem cena.
+    Sortowanie Allegro.
   */
 
   allegroOffers.sort(
@@ -1607,6 +1771,13 @@ async function findBook(
           b.matchScore -
           a.matchScore
         );
+      }
+
+      if (
+        a.price == null &&
+        b.price == null
+      ) {
+        return 0;
       }
 
       if (
@@ -1665,20 +1836,10 @@ async function findBook(
       allegroOffers
     );
 
-  /*
-    Hegemon:
-    tylko potwierdzone available === true.
-  */
-
   const cheapestHegemon =
     cheapestAvailable(
       hegemonOffers
     );
-
-  /*
-    Pan Mysza:
-    tylko potwierdzone available === true.
-  */
 
   const cheapestPan =
     cheapestAvailable(
@@ -1724,20 +1885,12 @@ async function findBook(
 
   /*
     ========================================================
-    ODPOWIEDŹ DLA KSIĄŻKI
+    RESPONSE DLA KSIĄŻKI
     ========================================================
   */
 
   return {
     ...book,
-
-    /*
-      found oznacza:
-      znaleźliśmy przynajmniej
-      jedno sensowne dopasowanie.
-
-      Nie musi być dostępne.
-    */
 
     found:
       allegroOffers.length > 0 ||
@@ -1793,11 +1946,6 @@ async function findBook(
         offerCount:
           hegemonOffers.length,
 
-        /*
-          Tylko TRUE.
-          null nie jest liczone.
-        */
-
         availableOfferCount:
           hegemonOffers.filter(
             (offer) =>
@@ -1817,11 +1965,6 @@ async function findBook(
               offer.available ===
               false
           ).length,
-
-        /*
-          lowestPrice oznacza od teraz
-          najtańszą POTWIERDZONĄ dostępną ofertę.
-        */
 
         lowestPrice:
           cheapestHegemon
@@ -1876,9 +2019,9 @@ async function findBook(
     },
 
     /*
-      ======================================================
+      -------------------------
       NAJLEPSZA UŻYWANA
-      ======================================================
+      -------------------------
     */
 
     bestUsedPrice:
@@ -1894,11 +2037,9 @@ async function findBook(
       null,
 
     /*
-      ======================================================
+      -------------------------
       NAJLEPSZA NOWA
-      ======================================================
-
-      Tylko potwierdzone available === true.
+      -------------------------
     */
 
     bestNewPrice:
@@ -1973,11 +2114,8 @@ export async function GET(
     }
 
     /*
-      Maksymalnie 3 książki
-      na jeden request.
-
-      Główny powód:
-      Allegro Lokalnie.
+      Max 3 książki na request,
+      głównie przez Allegro Lokalnie.
     */
 
     limit =
@@ -1987,12 +2125,8 @@ export async function GET(
       );
 
     /*
-      ========================================================
-      KATALOGI SKLEPÓW
-
-      Hegemon i Pan Mysza pobieramy
-      raz na cały request.
-      ========================================================
+      Hegemon + Pan Mysza
+      pobieramy raz na request.
     */
 
     const [
@@ -2003,10 +2137,6 @@ export async function GET(
         getHegemonCatalog(),
         getPanMyszaCatalog(),
       ]);
-
-    /*
-      Książki do przetworzenia.
-    */
 
     const selected =
       BOOKS.slice(
@@ -2032,7 +2162,8 @@ export async function GET(
       );
 
       /*
-        Pauza dla Allegro Lokalnie.
+        Pauza głównie dla
+        Allegro Lokalnie.
       */
 
       await sleep(800);
