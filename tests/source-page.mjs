@@ -34,3 +34,7 @@ for(const [source,url] of [
  ['tania','https://www.taniaksiazka.pl/book-p-123.html']
  ]){assert(allowedSourceUrl(source,url));assert(!allowedSourceUrl(source,url.replace(new URL(url).hostname,'evil.invalid')));assert(!allowedSourceUrl(source,new URL('/admin',url).href));assert(!allowedSourceUrl(source,new URL('/index.php?action=delete&id=1',url).href));}
 console.log('PASS: four additional hosts, public search/product paths and legacy NWS redirects; account and admin URLs denied.');
+
+for (const url of ['https://lagano.pl/?post_type=product&s=Warhammer','https://lagano.pl/page/2/?post_type=product&s=Warhammer','https://lagano.pl/ksiazki/fantastyka/warhammer-fantastyka/herezja-horusa-pretorianin-dorna/']) assert(allowedSourceUrl('lagano',url));
+for (const url of ['https://lagano.pl/','https://lagano.pl/?s=book','https://lagano.pl/?post_type=product&s=book&action=delete','https://lagano.pl/wp-json/','https://lagano.pl/wp-admin/','https://evil.invalid/?post_type=product&s=book']) assert.equal(allowedSourceUrl('lagano',url),null);
+console.log('PASS: Lagano public book search, pagination and product paths; arbitrary root actions denied.');
