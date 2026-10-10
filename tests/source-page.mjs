@@ -22,3 +22,15 @@ assert.equal((await sourcePageResponse(request(), {token,fetchPage:async()=>new 
 assert.equal((await sourcePageResponse(request(), {token,fetchPage:async()=>new Response('pdf',{headers:{'Content-Type':'application/pdf'}})})).status,502);
 assert.equal((await sourcePageResponse(request(), {token,fetchPage:async()=>new Response('x'.repeat(MAX_PAGE_BYTES+1),{headers:{'Content-Type':'text/html'}})})).status,413);
 console.log('PASS: authorization, fixed source hosts/paths, redirect validation, loop detection, bounded HTML response and truthful upstream errors.');
+
+for(const [source,url] of [
+ ['poznan','https://www.antykwariat.pl/pl/searchquery/Horus/1/full/5'],
+ ['nws','https://www.antykwariatnws.pl/index.php?action=antykwariat_wyszukiwarka&tekst=Horusa'],
+ ['nws','https://www.antykwariatnws.pl/szukaj_w_antykwariat-Horusa---.html'],
+ ['nws','https://www.antykwariatnws.pl/oferta-116-75939-title.html'],
+ ['kwadryga','https://kwadryga.com/sklep/?woos=Horusa'],
+ ['kwadryga','https://kwadryga.com/produkt/book/'],
+ ['tania','https://www.taniaksiazka.pl/Search?q=Horusa'],
+ ['tania','https://www.taniaksiazka.pl/book-p-123.html']
+ ]){assert(allowedSourceUrl(source,url));assert(!allowedSourceUrl(source,url.replace(new URL(url).hostname,'evil.invalid')));assert(!allowedSourceUrl(source,new URL('/admin',url).href));assert(!allowedSourceUrl(source,new URL('/index.php?action=delete&id=1',url).href));}
+console.log('PASS: four additional hosts, public search/product paths and legacy NWS redirects; account and admin URLs denied.');
