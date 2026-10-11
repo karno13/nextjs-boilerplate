@@ -38,3 +38,9 @@ console.log('PASS: four additional hosts, public search/product paths and legacy
 for (const url of ['https://lagano.pl/?post_type=product&s=Warhammer','https://lagano.pl/page/2/?post_type=product&s=Warhammer','https://lagano.pl/ksiazki/fantastyka/warhammer-fantastyka/herezja-horusa-pretorianin-dorna/']) assert(allowedSourceUrl('lagano',url));
 for (const url of ['https://lagano.pl/','https://lagano.pl/?s=book','https://lagano.pl/?post_type=product&s=book&action=delete','https://lagano.pl/wp-json/','https://lagano.pl/wp-admin/','https://evil.invalid/?post_type=product&s=book']) assert.equal(allowedSourceUrl('lagano',url),null);
 console.log('PASS: Lagano public book search, pagination and product paths; arbitrary root actions denied.');
+
+for(const url of ['https://www.vinted.pl/catalog/2312-books?search_text=Horus%20Rising','https://www.vinted.pl/catalog/2312-books?search_text=Horus&page=2'])assert(allowedSourceUrl('vinted',url));
+for(const url of ['https://www.vinted.pl/member/123','https://www.vinted.pl/catalog/2312-books?search_text=Horus&page=11','https://www.vinted.pl/catalog/2312-books?search_text=Horus&action=delete','https://evil.invalid/catalog/2312-books?search_text=Horus'])assert.equal(allowedSourceUrl('vinted',url),null);
+const vinted=await sourcePageResponse(request({source:'vinted',url:'https://www.vinted.pl/catalog/2312-books?search_text=Horus&page=2'}),{token,fetchPage});
+assert.equal(vinted.status,200);
+console.log('PASS Vinted: Books search/page allowlist, authenticated HTML relay, unsafe paths/queries denied.');
