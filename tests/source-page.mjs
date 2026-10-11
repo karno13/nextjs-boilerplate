@@ -44,3 +44,11 @@ for(const url of ['https://www.vinted.pl/member/123','https://www.vinted.pl/cata
 const vinted=await sourcePageResponse(request({source:'vinted',url:'https://www.vinted.pl/catalog/2312-books?search_text=Horus&page=2'}),{token,fetchPage});
 assert.equal(vinted.status,200);
 console.log('PASS Vinted: Books search/page allowlist, authenticated HTML relay, unsafe paths/queries denied.');
+
+const warcraftToken = 'w'.repeat(48);
+const warcraftRequest = request({source:'vinted',url:'https://www.vinted.pl/catalog/2312-books?search_text=Sylvanas&page=1'},warcraftToken);
+assert.equal((await sourcePageResponse(warcraftRequest,{token,warcraftToken,fetchPage})).status,200);
+assert.equal((await sourcePageResponse(request(),{token,warcraftToken,fetchPage})).status,200);
+assert.equal((await sourcePageResponse(request(undefined,'wrong'),{token,warcraftToken,fetchPage})).status,401);
+assert.equal((await sourcePageResponse(request(undefined,warcraftToken),{token:'',warcraftToken,fetchPage})).status,200);
+console.log('PASS: independent Warcraft credential and existing 40K credential, invalid keys denied.');
