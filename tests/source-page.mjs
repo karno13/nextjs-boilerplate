@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {sourcePageResponse, allowedSourceUrl, MAX_PAGE_BYTES} from '../lib/source-page.mjs';
 const token = 'a'.repeat(40);
 const target = 'https://mepel.pl/horus-rising-paperback-1';
@@ -7,7 +8,7 @@ const request = (body = {source:'mepel',url:target}, auth = token) => new Reques
 });
 let calls = 0;
 const fetchPage = async () => {calls++;return new Response('<h1>Horus Rising</h1>', {headers:{'Content-Type':'text/html; charset=utf-8'}});};
-assert.equal((await sourcePageResponse(request(), {token:'',fetchPage})).status,503);
+assert.equal((await sourcePageResponse(request(), {token:'',warcraftToken:'',fantasyTokenHash:'',fetchPage})).status,503);
 assert.equal((await sourcePageResponse(request(undefined,'wrong'), {token,fetchPage})).status,401);
 for (const url of ['http://mepel.pl/book','https://user:password@mepel.pl/book','https://mepel.pl:8080/book','https://mepel.pl.attacker.invalid/book','https://127.0.0.1/book','https://mepel.pl/admin'])
   assert.equal((await sourcePageResponse(request({source:'mepel',url}), {token,fetchPage})).status,400);
@@ -52,3 +53,20 @@ assert.equal((await sourcePageResponse(request(),{token,warcraftToken,fetchPage}
 assert.equal((await sourcePageResponse(request(undefined,'wrong'),{token,warcraftToken,fetchPage})).status,401);
 assert.equal((await sourcePageResponse(request(undefined,warcraftToken),{token:'',warcraftToken,fetchPage})).status,200);
 console.log('PASS: independent Warcraft credential and existing 40K credential, invalid keys denied.');
+
+const fantasyToken='f'.repeat(64);
+const fantasyTokenHash=createHash('sha256').update(fantasyToken).digest('hex');
+const fantasyBody={source:'vinted',url:'https://www.vinted.pl/catalog/2312-books?search_text=Trollslayer'};
+const fantasy=await sourcePageResponse(request(fantasyBody,fantasyToken),{token,warcraftToken,fantasyTokenHash,fetchPage});
+assert.equal(fantasy.status,200);
+assert(fantasy.headers.has('x-source-fetched-at'));
+const beforeRejected=calls;
+for(const invalid of ['e'.repeat(64),fantasyTokenHash,'wrong'])assert.equal((await sourcePageResponse(request(fantasyBody,invalid),{token,warcraftToken,fantasyTokenHash,fetchPage})).status,401);
+assert.equal(calls,beforeRejected,'invalid Fantasy tokens and the public verifier must not reach upstream');
+const denied=await sourcePageResponse(request(fantasyBody,fantasyToken),{token:'',warcraftToken:'',fantasyTokenHash,fetchPage:async()=>new Response(null,{status:403})});
+assert.equal(denied.status,403);assert.equal(denied.headers.get('x-source-upstream-status'),'403');
+console.log('PASS Fantasy: existing credential verifier, authenticated Vinted read, invalid credentials rejected, upstream denial distinguished.');
+
+const previousFantasyVerifier=process.env.FANTASY_FETCH_TOKEN_SHA256;
+try { process.env.FANTASY_FETCH_TOKEN_SHA256=fantasyTokenHash; assert.equal((await sourcePageResponse(request(fantasyBody,fantasyToken),{token,fetchPage})).status,200); }
+finally { if(previousFantasyVerifier===undefined)delete process.env.FANTASY_FETCH_TOKEN_SHA256;else process.env.FANTASY_FETCH_TOKEN_SHA256=previousFantasyVerifier; }
