@@ -23,12 +23,13 @@ async function token(){
  // Mask the token before any later error can include it.
  console.log('::add-mask::'+body.value);
  const claims=JSON.parse(Buffer.from(body.value.split('.')[1],'base64url').toString('utf8'));
+ console.log(JSON.stringify({identity:{issuer:claims.iss,audience:claims.aud,repositoryId:claims.repository_id,ownerId:claims.repository_owner_id,workflow:claims.workflow_ref,ref:claims.ref,event:claims.event_name}}));
  identity={value:body.value,until:claims.exp*1000};return identity.value;
 }
 async function api(body,retries=3){
  for(let attempt=0;;attempt++){
   try{
-   const response=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+await token(),'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(70_000),redirect:'error'});
+   const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(70_000),redirect:'error'});
    if(response.status===409)return {changed:true};
    if(!response.ok){const error=Object.assign(new Error('Site HTTP '+response.status),{status:response.status});throw error;}
    return await response.json();
@@ -53,7 +54,7 @@ async function main(){
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
  // A bounded job resumes the durable queue at the next scheduled invocation.
- const until=Date.now()+45*60_000;
+ const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
  try{
   while(!stopping&&Date.now()<until){
    const next=await api({action:'next'});if(next.complete)break;if(next.changed)break;
