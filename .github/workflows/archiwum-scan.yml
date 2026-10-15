@@ -1,0 +1,30 @@
+name: Archiwum 40K — darmowy skaner
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'archiwum-scanner/**'
+      - '.github/workflows/archiwum-scan.yml'
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: archiwum-40k-scanner
+  cancel-in-progress: false
+jobs:
+  scan:
+    if: github.repository == 'karno13/nextjs-boilerplate' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Odczyt kontrolny sklepów bez Vercela
+        if: github.event_name == 'push'
+        run: node archiwum-scanner/run.mjs --probe
+      - name: Skanowanie i zapis postępu
+        run: node archiwum-scanner/run.mjs
