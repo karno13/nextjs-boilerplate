@@ -23,15 +23,15 @@ async function token(){
  // Mask the token before any later error can include it.
  console.log('::add-mask::'+body.value);
  const claims=JSON.parse(Buffer.from(body.value.split('.')[1],'base64url').toString('utf8'));
- console.log(JSON.stringify({identity:{issuer:claims.iss,audience:claims.aud,repositoryId:claims.repository_id,ownerId:claims.repository_owner_id,workflow:claims.workflow_ref,ref:claims.ref,event:claims.event_name}}));
+ console.log(JSON.stringify({identity:{issuer:claims.iss,audience:claims.aud,repositoryId:claims.repository_id,ownerId:claims.repository_owner_id,workflow:claims.workflow_ref,ref:claims.ref,event:claims.event_name,subject:claims.sub,visibility:claims.repository_visibility,issued:claims.iat,notBefore:claims.nbf,expires:claims.exp}}));
  identity={value:body.value,until:claims.exp*1000};return identity.value;
 }
 async function api(body,retries=3){
  for(let attempt=0;;attempt++){
   try{
-   const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(70_000),redirect:'error'});
+   const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify({...body,identityToken:await token()}),signal:AbortSignal.timeout(70_000),redirect:'error'});
    if(response.status===409)return {changed:true};
-   if(!response.ok){const error=Object.assign(new Error('Site HTTP '+response.status),{status:response.status});throw error;}
+   if(!response.ok){const details=await response.json().catch(()=>({}));const error=Object.assign(new Error('Site HTTP '+response.status+(typeof details.code==='string'?' '+details.code:'')),{status:response.status});throw error;}
    return await response.json();
   }catch(error){if(attempt>=retries||error.status&&error.status<500)throw error;await wait(3000*(attempt+1));}
  }
@@ -68,6 +68,8 @@ async function main(){
    await wait(1000);
   }
  }catch(error){failed=true;throw error;}finally{await api({action:'release',failed}).catch(()=>console.error('Lease will expire automatically.'));}
- console.log('Saved stages: '+stages);
+ const persisted=await api({action:'status'});
+ const progress=persisted.worker?.result?JSON.parse(persisted.worker.result):null;
+ console.log(JSON.stringify({persisted:{state:persisted.worker?.state,done:progress?.done,total:progress?.total,sourceProgress:progress?.sourceProgress},savedStages:stages}));
 }
 main().catch(error=>{console.error(error.message);process.exitCode=1;});
