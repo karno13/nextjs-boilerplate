@@ -5,6 +5,11 @@ The public runner uses standard Ubuntu GitHub-hosted runners in the public
 45 minutes, and resumes the Site's durable queue. GitHub schedules can be delayed;
 after 60 days without repository activity GitHub can disable the schedule.
 
+The workflow has contents:read only and never modifies repository files.
+Authenticated scanner runs refresh only their own public verification keys in D1
+with a 48-hour expiry. Initial trusted keys are bootstrapped from GitHub via HTTPS;
+unknown or expired keys fail closed.
+
 No npm installation, Vercel endpoint, shared secret, collection export, private
 notes, or result artifacts are needed. GitHub OIDC identifies the exact repository
 ID, owner ID, workflow path, main branch, event, and run. Forks and pull requests

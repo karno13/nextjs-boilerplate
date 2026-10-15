@@ -50,6 +50,11 @@ async function main(){
   return;
  }
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');
+ const keyResponse=await fetch('https://token.actions.githubusercontent.com/.well-known/jwks',{signal:AbortSignal.timeout(20_000),redirect:'error'});
+ if(!keyResponse.ok)throw Error('GitHub public signing keys unavailable');
+ const freshKeys=await keyResponse.json();
+ const keySaved=await api({action:'refresh-keys',keys:freshKeys.keys});if(!keySaved.ok)throw Error('Public signing keys were not saved');
+ console.log('Public signing-key refresh confirmed by Sites.');
  const claim=await api({action:'claim'});if(!claim.claimed){console.log('Another run is active or the completed scan is cooling down.');return;}
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
