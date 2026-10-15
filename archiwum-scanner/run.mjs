@@ -30,7 +30,7 @@ async function api(body,retries=3){
  for(let attempt=0;;attempt++){
   try{
    const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify({...body,identityToken:await token()}),signal:AbortSignal.timeout(70_000),redirect:'error'});
-   if(response.status===409)return {changed:true};
+   if(response.status===409){const details=await response.json().catch(()=>({}));return {changed:true,reason:details.code||'QUEUE_CHANGED',retryAfter:Number(response.headers.get('Retry-After')||5)};}
    if(!response.ok){const details=await response.json().catch(()=>({}));const error=Object.assign(new Error('Site HTTP '+response.status+(typeof details.code==='string'?' '+details.code:'')),{status:response.status});throw error;}
    return await response.json();
   }catch(error){if(attempt>=retries||error.status&&error.status<500)throw error;await wait(3000*(attempt+1));}
@@ -63,11 +63,11 @@ async function main(){
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
  try{
   while(!stopping&&Date.now()<until){
-   const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed)break;
+   const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
    if(!next.task)continue; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
    const saved=await api({action:'result',taskId:next.task.taskId,scan:result});
-   stages++;
+   if(!saved.changed)stages++;
    // Public logs contain counts and source health, never books or personal data.
    console.log(JSON.stringify({stage:stages,sources:result.sources.map(s=>({source:s.source,state:s.state,httpStatus:s.httpStatus})),done:saved.done,total:saved.total,complete:saved.complete,changed:saved.changed}));
    if(saved.complete)break;
