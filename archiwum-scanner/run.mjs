@@ -55,6 +55,7 @@ async function main(){
  const freshKeys=await keyResponse.json();
  const keySaved=await api({action:'refresh-keys',keys:freshKeys.keys});if(!keySaved.ok)throw Error('Public signing keys were not saved');
  console.log('Public signing-key refresh confirmed by Sites.');
+ console.log(JSON.stringify({before:{state:status.worker?.state,done:status.queue?.done,total:status.queue?.total,hasWorkerResult:!!status.worker?.result}}));
  const claim=await api({action:'claim'});if(!claim.claimed){console.log('Another run is active or the completed scan is cooling down.');return;}
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
@@ -62,7 +63,7 @@ async function main(){
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
  try{
   while(!stopping&&Date.now()<until){
-   const next=await api({action:'next'});if(next.complete)break;if(next.changed)break;
+   const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed)break;
    if(!next.task)continue; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
    const saved=await api({action:'result',taskId:next.task.taskId,scan:result});
