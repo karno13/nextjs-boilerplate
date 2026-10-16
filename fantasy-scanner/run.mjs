@@ -39,7 +39,7 @@ async function api(body,retries=3){
 function policy(){let next=0;return {async beforeRead(signal){await wait(Math.max(0,next-Date.now()),undefined,{signal});next=Date.now()+2000;},async onFailure(){}};}
 async function scan(task){
  if(task.scannerVersion!==SCANNER_VERSION)throw Error('Scanner revision mismatch; update the public scanner');
- return scanBook(task.book,task.cooldowns,task.scope,task.sources,{source:35000,book:45000,vinted:35000,concurrency:1},undefined,policy(),{'Amazon PL':policy()});
+ return scanBook(task.book,task.cooldowns,task.scope,task.sources,{source:35000,book:45000,vinted:35000,concurrency:4},undefined,policy(),{'Amazon PL':policy()});
 }
 async function main(){
  const probe=process.argv.includes('--probe');
@@ -63,10 +63,10 @@ async function main(){
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
  try{
   while(!stopping&&Date.now()<until){
-   const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
+   const next=await api({action:'next',sourceBatchSize:4});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
    if(!next.task)continue; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
-   const saved=await api({action:'result',taskId:next.task.taskId,scan:result});
+   const saved=await api({action:'result',sourceBatchSize:4,taskId:next.task.taskId,scan:result});
    if(!saved.changed)stages++;
    // Public logs contain counts and source health, never books or personal data.
    console.log(JSON.stringify({stage:stages,sources:result.sources.map(s=>({source:s.source,state:s.state,httpStatus:s.httpStatus})),done:saved.done,total:saved.total,complete:saved.complete,changed:saved.changed}));
