@@ -60,7 +60,7 @@ async function main(){
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
  // A bounded job resumes the durable queue at the next scheduled invocation.
- const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
+ const until=Date.now()+45*60_000;
  try{
   while(!stopping&&Date.now()<until){
    const next=await api({action:'next',sourceBatchSize:4});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
