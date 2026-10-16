@@ -1,0 +1,30 @@
+name: Archiwum Fantasy — darmowy skaner
+on:
+  schedule:
+    - cron: '53 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'fantasy-scanner/**'
+      - '.github/workflows/fantasy-scan.yml'
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: fantasy-scanner
+  cancel-in-progress: false
+jobs:
+  scan:
+    if: github.repository == 'karno13/nextjs-boilerplate' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Odczyt kontrolny sklepów bez Vercela
+        if: github.event_name == 'push'
+        run: node fantasy-scanner/run.mjs --probe
+      - name: Skanowanie i zapis postępu
+        run: node fantasy-scanner/run.mjs
