@@ -39,7 +39,9 @@ async function api(body,retries=3){
 function policy(){let next=0;return {async beforeRead(signal){await wait(Math.max(0,next-Date.now()),undefined,{signal});next=Date.now()+2000;},async onFailure(){}};}
 async function scan(task){
  if(task.scannerVersion!==SCANNER_VERSION)throw Error('Scanner revision mismatch; update the public scanner');
- return scanBook(task.book,task.cooldowns,task.scope,task.sources,{source:35000,book:45000,vinted:35000,concurrency:1},undefined,policy(),{'Amazon PL':policy()});
+ const result=await scanBook(task.book,task.cooldowns,task.scope,task.sources,{source:35000,book:45000,vinted:35000,concurrency:8},undefined,policy(),{'Amazon PL':policy()});
+ // Result validation follows the task order, while parsers schedule slow shops first.
+ result.sources=task.sources.map(name=>result.sources.find(s=>s.source===name));return result;
 }
 async function main(){
  const probe=process.argv.includes('--probe');
@@ -60,7 +62,7 @@ async function main(){
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
  // A bounded job resumes the durable queue at the next scheduled invocation.
- const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?120_000:45*60_000);
+ const until=Date.now()+12*60_000;
  try{
   while(!stopping&&Date.now()<until){
    const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}

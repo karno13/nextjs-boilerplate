@@ -2278,7 +2278,7 @@ async function bookstoreOffers(b, checked, shop, read) {
 			lastError = e;
 		}
 	}), 2);
-	if (!out.length && String(lastError).includes("blocked")) throw Error("blocked");
+	if (!out.length && lastError) throw lastError;
 	if (!out.length && !productWithoutPrice && (searchFailed || failed || !urls.length && !/nie znaleziono|brak wynik|no results|0 results/i.test(clean(searchHTML)) && !(shop === "tania" && /<h1\b[^>]*class=["'][^"']*listing__title[^"']*["'][^>]*>[\s\S]*?Wyniki wyszukiwania/i.test(searchHTML)))) throw Error("Nie udało się potwierdzić cen księgarni.");
 	return {
 		offers: [...new Map(out.map((o) => [o.id, o])).values()],
@@ -2573,17 +2573,49 @@ async function sourceReaderResponse(url, token, signal, endpoint = "https://next
 	}
 	throw readerFailure(void 0);
 }
+async function directSourceResponse(url, signal) {
+	const seen = /* @__PURE__ */ new Set();
+	let current = url;
+	for (let hop = 0; hop <= 5; hop++) {
+		signal.throwIfAborted();
+		const target = new URL(current);
+		target.hash = "";
+		current = target.href;
+		if (target.protocol !== "https:" || target.username || target.password || target.port) throw Error("Nieprawidłowe przekierowanie źródła.");
+		if (seen.has(current)) throw Object.assign(/* @__PURE__ */ new Error("Serwis zapętla przekierowania; odczyt przerwany."), {
+			errorOrigin: "source",
+			code: "REDIRECT_LOOP"
+		});
+		seen.add(current);
+		const response = await fetch(current, {
+			headers: {
+				Accept: "text/html",
+				"User-Agent": "Archiwum40K/1.0 (book price comparison)"
+			},
+			redirect: "manual",
+			signal
+		});
+		if (![
+			301,
+			302,
+			303,
+			307,
+			308
+		].includes(response.status) || !response.headers.get("location")) return response;
+		const next = new URL(response.headers.get("location"), current).href;
+		await response.body?.cancel();
+		current = next;
+	}
+	throw Object.assign(/* @__PURE__ */ new Error("Serwis przekroczył limit 5 przekierowań."), {
+		errorOrigin: "source",
+		code: "REDIRECT_LIMIT"
+	});
+}
 async function fetchLimited(url, parent, readerToken, readerEndpoint, readerBackup) {
 	parent?.throwIfAborted();
 	const timeout = new URL(url).hostname === "www.vinted.pl" ? 23e3 : 18e3;
 	const relayed = await sourceReaderResponse(url, readerToken, parent, readerEndpoint, readerBackup);
-	const response = relayed || await fetch(url, {
-		headers: {
-			Accept: "text/html",
-			"User-Agent": "Archiwum40K/1.0 (book price comparison)"
-		},
-		signal: parent ? AbortSignal.any([parent, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout)
-	});
+	const response = relayed || await directSourceResponse(url, parent ? AbortSignal.any([parent, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout));
 	if (!response.ok && new URL(url).hostname.endsWith("vinted.pl")) throw Object.assign(vintedFailure(response.status, response.headers.get("Retry-After")), { requestId: relayed?.headers.get("x-vercel-id")?.replace(/[^a-zA-Z0-9:_.-]/g, "").slice(0, 120) });
 	if (!response.ok && /^www\.amazon\.(?:pl|de|co\.uk)$/.test(new URL(url).hostname)) throw amazonFailure(response.status, response.headers.get("Retry-After"));
 	if (!response.ok) throw Object.assign(/* @__PURE__ */ new Error(response.status === 403 || response.status === 429 ? "blocked HTTP " + response.status : "HTTP " + response.status), {
@@ -2638,7 +2670,7 @@ async function readWithConnectionRetry(read, signal, enabled) {
 		return read();
 	}
 }
-var SCANNER_VERSION = 49;
+var SCANNER_VERSION = 50;
 var sourcePriority = {
 	"Vinted": 10,
 	"Booksale": 3,
@@ -2973,7 +3005,7 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	return {
 		id: b.id,
 		checked,
-		scannerVersion: 49,
+		scannerVersion: 50,
 		language,
 		scope,
 		selectedSources,
@@ -2982,4 +3014,4 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	};
 }
 //#endregion
-export { SCANNER_VERSION, baseOffer, clean, isBundle, matches, parseEbay, parseOlx, parseWoo, readWithConnectionRetry, readerFailure, readerTraceMessage, runLimited, scanBook, scanErrorDetail, sourceReaderHosts, sourceReaderResponse, vintedOffers };
+export { SCANNER_VERSION, baseOffer, clean, directSourceResponse, isBundle, matches, parseEbay, parseOlx, parseWoo, readWithConnectionRetry, readerFailure, readerTraceMessage, runLimited, scanBook, scanErrorDetail, sourceReaderHosts, sourceReaderResponse, vintedOffers };
