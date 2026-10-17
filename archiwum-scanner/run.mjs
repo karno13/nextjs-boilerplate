@@ -1,3 +1,4 @@
+import {queueFingerprint,continuationPlan,dispatchContinuation} from './continuation.mjs';
 import {scanBook,SCANNER_VERSION} from './runtime/scanner.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
 
@@ -52,6 +53,11 @@ async function main(){
   return;
  }
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');
+ const generation=Number(process.env.ARCHIWUM_CONTINUATION||0),expectedFingerprint=process.env.ARCHIWUM_QUEUE_FINGERPRINT||'';
+ if(!Number.isInteger(generation)||generation<0||generation>100)throw Error('Invalid continuation generation');
+ if(generation>0&&(!expectedFingerprint||expectedFingerprint!==queueFingerprint(status.queue?.token))){console.log('Queue ended or was replaced; continuation stopped.');return;}
+ let initialQueueToken=status.queue?.token;
+
  const keyResponse=await fetch('https://token.actions.githubusercontent.com/.well-known/jwks',{signal:AbortSignal.timeout(20_000),redirect:'error'});
  if(!keyResponse.ok)throw Error('GitHub public signing keys unavailable');
  const freshKeys=await keyResponse.json();
@@ -62,11 +68,12 @@ async function main(){
  let failed=false,stopping=false,stages=0;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
  // A bounded job resumes the durable queue at the next scheduled invocation.
- const until=Date.now()+12*60_000;
+ const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?60_000:12*60_000);
  try{
   while(!stopping&&Date.now()<until){
    const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
-   if(!next.task)continue; // A saved checkpoint was recovered server-side.
+   if(!next.task)continue;
+   if(!initialQueueToken)initialQueueToken=next.task.taskId.split(':')[0]; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
    const saved=await api({action:'result',taskId:next.task.taskId,scan:result});
    if(!saved.changed)stages++;
@@ -79,5 +86,7 @@ async function main(){
  const persisted=await api({action:'status'});
  const progress=persisted.worker?.result?JSON.parse(persisted.worker.result):null;
  console.log(JSON.stringify({persisted:{state:persisted.worker?.state,done:progress?.done,total:progress?.total,sourceProgress:progress?.sourceProgress},savedStages:stages}));
+ if(!stopping){const plan=continuationPlan(initialQueueToken,persisted,stages,generation);if(plan){await dispatchContinuation(plan,process.env.GITHUB_TOKEN);console.log('Next bounded scan run requested for the same unfinished queue.');}}
+
 }
 main().catch(error=>{console.error(error.message);process.exitCode=1;});
