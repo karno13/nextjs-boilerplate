@@ -86,11 +86,14 @@ async function scan(task){
  return scanBook(task.book,task.cooldowns,task.scope,task.sources,{source:35000,book:45000,vinted:35000,concurrency:8},undefined,policy(),{'Amazon PL':policy()});
 }
 async function main(){
- const probe=process.argv.includes('--probe');
+ const polishProbe=process.argv.includes('--probe-polish');
+ const probe=process.argv.includes('--probe')||polishProbe;
  if(probe){
   const book={id:'probe',title:'Trollslayer',pl:'Zabójca Trolli',author:'William King',series:'Gotrek i Felix',number:1,raw:'',uncertain:false,note:'',kind:'powieść'};
-  const report=await scan({book,cooldowns:{},scope:'all',sources:['Copernicus','Tantis','Tezeusz','Allegro Lokalnie'],scannerVersion:SCANNER_VERSION});
-  for(const source of report.sources)console.log(JSON.stringify({source:source.source,state:source.state,httpStatus:source.httpStatus,offers:report.offers.filter(o=>o.source===source.source).length}));
+  const target=polishProbe?{...book,title:'Konrad',pl:'Konrad',author:'David Ferring',series:'Konrad'}:book;
+  const sources=polishProbe?['Antykwariat Królicza Jama','Hermes Zaczytany','Antykwariat Grochowski','Antykwariat Tomik','Antykwariat Zakładka','Antykwariat Podkarpacki','Antykwariat Poliart']:['Copernicus','Tantis','Tezeusz','Allegro Lokalnie'];
+  const report=await scan({book:target,cooldowns:{},scope:polishProbe?'used':'all',sources,scannerVersion:SCANNER_VERSION});
+  for(const source of report.sources)console.log(JSON.stringify({source:source.source,state:source.state,httpStatus:source.httpStatus,offers:report.offers.filter(o=>o.source===source.source).length,...(polishProbe?{message:source.message,requests:source.requestCount}: {})}));
   return;
  }
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');

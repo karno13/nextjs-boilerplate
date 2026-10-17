@@ -26,5 +26,8 @@ jobs:
       - name: Odczyt kontrolny sklepów bez Vercela
         if: github.event_name == 'push'
         run: node fantasy-scanner/run.mjs --probe
+      - name: Odczyt kontrolny siedmiu polskich antykwariatów
+        if: github.event_name == 'push'
+        run: node fantasy-scanner/run.mjs --probe-polish
       - name: Skanowanie i zapis postępu
         run: node fantasy-scanner/run.mjs
