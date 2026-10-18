@@ -1,4 +1,4 @@
-import {queueFingerprint,continuationPlan,dispatchContinuation} from './continuation.mjs';
+import {queueFingerprint,continuationPlan,replacementPlan,dispatchContinuation} from './continuation.mjs';
 import {scanBook,SCANNER_VERSION} from './runtime/scanner.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
 
@@ -66,13 +66,15 @@ async function main(){
  console.log('Public signing-key refresh confirmed by Sites.');
  console.log(JSON.stringify({before:{state:status.worker?.state,done:status.queue?.done,total:status.queue?.total,hasWorkerResult:!!status.worker?.result}}));
  const claim=await api({action:'claim'});if(!claim.claimed){console.log('Another run is active or the completed scan is cooling down.');return;}
- let failed=false,stopping=false,stages=0;
+ let failed=false,stopping=false,stages=0,waitingForRetry=false;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
  // A bounded job resumes the durable queue at the next scheduled invocation.
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?60_000:12*60_000);
  try{
   while(!stopping&&Date.now()<until){
    const next=await api({action:'next',queueToken:initialQueueToken});if(next.complete||next.state==='paused'){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
+   if(next.state==='retry-wait'){waitingForRetry=true;await wait(Math.min(30,Math.max(1,next.retryAfter||10))*1000);continue;}
+   waitingForRetry=false;
    if(!next.task)continue;
    if(!initialQueueToken)initialQueueToken=next.task.taskId.split(':')[0]; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
@@ -87,7 +89,7 @@ async function main(){
  const persisted=await api({action:'status'});
  const progress=persisted.worker?.result?JSON.parse(persisted.worker.result):null;
  console.log(JSON.stringify({persisted:{state:persisted.worker?.state,done:progress?.done,total:progress?.total,sourceProgress:progress?.sourceProgress},savedStages:stages}));
- if(!stopping){const plan=continuationPlan(initialQueueToken,persisted,stages,generation);if(plan){await dispatchContinuation(plan,process.env.GITHUB_TOKEN);console.log('Next bounded scan run requested for the same unfinished queue.');}}
+ if(!stopping){const plan=continuationPlan(initialQueueToken,persisted,stages,generation,waitingForRetry)||replacementPlan(initialQueueToken,persisted,generation);if(plan){await dispatchContinuation(plan,process.env.GITHUB_TOKEN);console.log('Next bounded scan run requested for the saved unfinished queue.');}}
 
 }
 main().catch(error=>{console.error(error.message);process.exitCode=1;});

@@ -599,6 +599,27 @@ function classifyPaperBook(title, names, evidence = {}) {
 		state: "rejected",
 		reason: "Tytuł nie pasuje do książki."
 	};
+	const volume = (value) => {
+		const match = normalizeBookText(value).match(/\b(?:tom|volume|vol|czesc|part)\s+(\d+|[ivx]+)\b/);
+		if (!match) return null;
+		return {
+			i: 1,
+			ii: 2,
+			iii: 3,
+			iv: 4,
+			v: 5,
+			vi: 6,
+			vii: 7,
+			viii: 8,
+			ix: 9,
+			x: 10
+		}[match[1]] || Number(match[1]);
+	};
+	const expectedVolumes = names.map(volume).filter((v) => v !== null), listedVolume = volume(title);
+	if (expectedVolumes.length && listedVolume !== null && !expectedVolumes.includes(listedVolume)) return {
+		state: "rejected",
+		reason: "Oferta wskazuje inny tom lub część książki."
+	};
 	if (identities.some((name) => (longerBookTitles[name] || []).some((longer) => !identities.includes(longer) && text.includes(" " + longer + " ")))) return {
 		state: "rejected",
 		reason: "Pełny tytuł wskazuje inną książkę z katalogu."
@@ -641,6 +662,11 @@ function classifyPaperBook(title, names, evidence = {}) {
 	if (evidence.author && expected.length && !expected.some((a) => authorMatches(evidence.author, a)) && !expected.some((a) => normalizeBookText(evidence.author).includes(normalizeBookText(a).split(" ").at(-1)))) return {
 		state: "rejected",
 		reason: "Autor podany przez sklep nie pasuje."
+	};
+	if (evidence.author && expected.length && !expected.some((a) => authorMatches(evidence.author, a))) return {
+		state: "review",
+		confidence: "likely",
+		reason: "Sklep podał tylko skrót lub niepełne dane autora. Potwierdź autora i wydanie."
 	};
 	if (evidence.isbn && meta?.editions.some((e) => e.isbn === evidence.isbn.replace(/[^0-9X]/g, ""))) return {
 		state: "matched",
@@ -2670,7 +2696,7 @@ async function readWithConnectionRetry(read, signal, enabled) {
 		return read();
 	}
 }
-var SCANNER_VERSION = 50;
+var SCANNER_VERSION = 51;
 var sourcePriority = {
 	"Vinted": 10,
 	"Booksale": 3,
@@ -3005,7 +3031,7 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	return {
 		id: b.id,
 		checked,
-		scannerVersion: 50,
+		scannerVersion: 51,
 		language,
 		scope,
 		selectedSources,
