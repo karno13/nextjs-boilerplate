@@ -32,7 +32,7 @@ async function api(body,retries=3){
   try{
    const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify({...body,identityToken:await token()}),signal:AbortSignal.timeout(70_000),redirect:'error'});
    if(response.status===409){const details=await response.json().catch(()=>({}));return {changed:true,reason:details.code||'QUEUE_CHANGED',retryAfter:Number(response.headers.get('Retry-After')||5)};}
-   if(!response.ok){const details=await response.json().catch(()=>({}));const error=Object.assign(new Error('Site HTTP '+response.status+(typeof details.code==='string'?' '+details.code:'')),{status:response.status});throw error;}
+   if(!response.ok){const details=await response.json().catch(()=>({}));const error=Object.assign(new Error('Site '+body.action+' HTTP '+response.status+(typeof details.code==='string'?' '+details.code:'')),{status:response.status});throw error;}
    return await response.json();
   }catch(error){if(attempt>=retries||error.status&&error.status<500)throw error;await wait(3000*(attempt+1));}
  }
@@ -53,6 +53,7 @@ async function main(){
   return;
  }
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');
+ if(!status.queue||status.queue.paused||status.queue.done>=status.queue.total){console.log('No unfinished active queue. Nothing to scan.');return;}
  const generation=Number(process.env.ARCHIWUM_CONTINUATION||0),expectedFingerprint=process.env.ARCHIWUM_QUEUE_FINGERPRINT||'';
  if(!Number.isInteger(generation)||generation<0||generation>100)throw Error('Invalid continuation generation');
  if(generation>0&&(!expectedFingerprint||expectedFingerprint!==queueFingerprint(status.queue?.token))){console.log('Queue ended or was replaced; continuation stopped.');return;}
@@ -71,11 +72,11 @@ async function main(){
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?60_000:12*60_000);
  try{
   while(!stopping&&Date.now()<until){
-   const next=await api({action:'next'});if(next.complete){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
+   const next=await api({action:'next',queueToken:initialQueueToken});if(next.complete||next.state==='paused'){console.log(JSON.stringify({queueEnd:{state:next.state,done:next.done,total:next.total,message:next.message}}));break;}if(next.changed){if(next.reason==='REPLACED')break;console.log(JSON.stringify({waiting:next.reason}));await wait(Math.min(10,Math.max(1,next.retryAfter||5))*1000);continue;}
    if(!next.task)continue;
    if(!initialQueueToken)initialQueueToken=next.task.taskId.split(':')[0]; // A saved checkpoint was recovered server-side.
    const result=await scan(next.task);
-   const saved=await api({action:'result',taskId:next.task.taskId,scan:result});
+   const saved=await api({action:'result',queueToken:initialQueueToken,taskId:next.task.taskId,scan:result});
    if(!saved.changed)stages++;
    // Public logs contain counts and source health, never books or personal data.
    console.log(JSON.stringify({stage:stages,sources:result.sources.map(s=>({source:s.source,state:s.state,httpStatus:s.httpStatus})),done:saved.done,total:saved.total,complete:saved.complete,changed:saved.changed}));

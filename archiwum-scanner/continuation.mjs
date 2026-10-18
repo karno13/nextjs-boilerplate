@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 export const queueFingerprint=token=>typeof token==='string'&&token?createHash('sha256').update(token).digest('hex'):'';
 export function continuationPlan(initialToken,status,stages,generation){
  const queue=status?.queue;
- if(!initialToken||queue?.token!==initialToken||!Number.isInteger(stages)||stages<1||status.worker?.state!=='yielded'||!Number.isInteger(generation)||generation<0||generation>=100||!Number.isInteger(queue.done)||!Number.isInteger(queue.total)||queue.done>=queue.total)return null;
+ if(!initialToken||queue?.token!==initialToken||queue.paused||!Number.isInteger(stages)||stages<1||status.worker?.state!=='yielded'||!Number.isInteger(generation)||generation<0||generation>=100||!Number.isInteger(queue.done)||!Number.isInteger(queue.total)||queue.done>=queue.total)return null;
  return {ref:'main',inputs:{continuation:String(generation+1),queue_fingerprint:queueFingerprint(initialToken)}};
 }
 export async function dispatchContinuation(plan,token,request=fetch){
