@@ -56,7 +56,11 @@ async function main(){
  if(!status.queue||status.queue.paused||status.queue.done>=status.queue.total){console.log('No unfinished active queue. Nothing to scan.');return;}
  const generation=Number(process.env.ARCHIWUM_CONTINUATION||0),expectedFingerprint=process.env.ARCHIWUM_QUEUE_FINGERPRINT||'';
  if(!Number.isInteger(generation)||generation<0||generation>100)throw Error('Invalid continuation generation');
- if((generation>0||expectedFingerprint)&&(!expectedFingerprint||expectedFingerprint!==queueFingerprint(status.queue?.token))){console.log('Queue ended or was replaced; continuation stopped.');return;}
+ if((generation>0||expectedFingerprint)&&(!expectedFingerprint||expectedFingerprint!==queueFingerprint(status.queue?.token))){
+  const replacement=expectedFingerprint?replacementPlan(expectedFingerprint,status,generation):null;
+  if(replacement)await dispatchContinuation(replacement,process.env.GITHUB_TOKEN);
+  console.log('Previous queue ended or was replaced; old tasks stopped.');return;
+ }
  let initialQueueToken=status.queue?.token;
 
  const keyResponse=await fetch('https://token.actions.githubusercontent.com/.well-known/jwks',{signal:AbortSignal.timeout(20_000),redirect:'error'});
