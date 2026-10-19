@@ -1,8 +1,8 @@
 import {queueFingerprint,continuationPlan,replacementPlan,dispatchContinuation} from './continuation.mjs';
 import {scanBook,SCANNER_VERSION} from './runtime/scanner.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
-// Publishing source must not start a production scan or shop probes as a test.
-if(process.env.GITHUB_EVENT_NAME==='push'){console.log('Scanner source updated; normal schedules remain in control.');process.exit(0);}
+// Only the scan step may resume an existing owner queue on a source repair; probes stay disabled.
+if(process.env.GITHUB_EVENT_NAME==='push'&&(process.env.ARCHIWUM_RESUME_SAVED_QUEUE!=='1'||process.argv.some(arg=>arg.startsWith('--probe')))){console.log('Scanner source updated; normal schedules remain in control.');process.exit(0);}
 
 
 const origin='https://warhammer-fantasy-archiwum.karnol13.chatgpt.site';
@@ -76,7 +76,7 @@ async function main(){
  const claim=await api({action:'claim'});if(!claim.claimed){console.log('Another run is active or the completed scan is cooling down.');return;}
  let failed=false,stopping=false,stages=0,waitingForRetry=false;
  process.once('SIGTERM',()=>{stopping=true;});process.once('SIGINT',()=>{stopping=true;});
- // A bounded job resumes the durable queue at the next scheduled invocation.
+ // A bounded job releases its durable cursor and dispatches the next job.
  const until=Date.now()+(process.env.GITHUB_EVENT_NAME==='push'?60_000:12*60_000);
  try{
   while(!stopping&&Date.now()<until){
@@ -93,7 +93,7 @@ async function main(){
    if(saved.complete)break;
    await wait(1000);
   }
- }catch(error){failed=true;throw error;}finally{await api({action:'release',failed}).catch(()=>console.error('Lease will expire automatically.'));}
+ }catch(error){failed=true;throw error;}finally{await api({action:'release',failed,nativeContinuation:!!process.env.GITHUB_TOKEN,stopping}).catch(()=>console.error('Lease will expire automatically.'));}
  const persisted=await api({action:'status'});
  const progress=persisted.worker?.result?JSON.parse(persisted.worker.result):null;
  console.log(JSON.stringify({persisted:{state:persisted.worker?.state,done:progress?.done,total:progress?.total,sourceProgress:progress?.sourceProgress},savedStages:stages}));

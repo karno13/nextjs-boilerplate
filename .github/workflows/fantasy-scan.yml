@@ -3,6 +3,13 @@ on:
   schedule:
     - cron: '3-58/5 * * * *'
   workflow_dispatch:
+    inputs:
+      continuation:
+        type: string
+        default: '0'
+      queue_fingerprint:
+        type: string
+        default: ''
   push:
     branches: [main]
     paths:
@@ -10,6 +17,7 @@ on:
       - '.github/workflows/fantasy-scan.yml'
 permissions:
   contents: read
+  actions: write
   id-token: write
 concurrency:
   group: fantasy-scanner
@@ -30,4 +38,9 @@ jobs:
         if: github.event_name == 'push'
         run: node fantasy-scanner/run.mjs --probe-polish
       - name: Skanowanie i zapis postępu
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIWUM_CONTINUATION: ${{ inputs.continuation || '0' }}
+          ARCHIWUM_QUEUE_FINGERPRINT: ${{ inputs.queue_fingerprint || '' }}
+          ARCHIWUM_RESUME_SAVED_QUEUE: '1'
         run: node fantasy-scanner/run.mjs
