@@ -39,6 +39,7 @@ function safeNext(raw, current) {
 		const base = new URL(current), u = new URL(decode(raw), base);
 		if (u.origin !== base.origin || u.username || u.password || u.protocol !== "https:" || u.href === base.href) return null;
 		for (const key of [
+			"slug",
 			"keywords",
 			"tekst",
 			"ksiazki",
@@ -138,181 +139,54 @@ async function readSearchPages(start, read, limit = 3) {
 		coverage: `Odczytano ${pages.length} stron wyników (limit ${limit}).${partial ? " Odczyt niepełny: " + reason : " Kolejne strony są odczytywane, gdy serwis udostępnia odnośnik lub dane paginacji."} Brak dopasowań nie potwierdza braku książki w całym serwisie.`
 	};
 }
-function reusableVintedCheckpoint(value, book, now = Date.now()) {
-	const c = value, terms = [...new Set([book.pl, book.title].filter(Boolean))];
-	if (!c || c.version !== 1 || !Number.isFinite(Date.parse(c.startedAt)) || Date.parse(c.startedAt) > now || now - Date.parse(c.startedAt) > 216e5 || !Array.isArray(c.terms) || c.terms.length !== terms.length || !Array.isArray(c.offers)) return null;
-	if (!c.terms.every((q, i) => q.term === terms[i] && Number.isInteger(q.pages) && q.pages >= 0 && q.pages <= 10 && typeof q.limited === "boolean" && (q.nextPage === null || Number.isInteger(q.nextPage) && q.nextPage === q.pages + 1 && q.nextPage <= 10))) return null;
-	if (!c.terms.some((q) => q.nextPage !== null) || c.offers.some((o) => o.bookId !== book.id || o.source !== "Vinted" || !/^https:\/\/(?:www\.)?vinted\.pl\/items\/\d+/.test(o.url))) return null;
-	return c;
-}
-//#endregion
-//#region lib/allegro-lokalnie.ts
-function parseAllegroListing(html, book, checked) {
-	const products = [];
-	let listing = false;
-	const visit = (node) => {
-		if (!node || typeof node !== "object") return;
-		if (Array.isArray(node)) {
-			node.forEach(visit);
-			return;
-		}
-		const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
-		if (types.includes("ItemList")) listing = true;
-		if (types.some((type) => ["Product", "Book"].includes(type))) products.push(node);
-		for (const key of [
-			"@graph",
-			"itemListElement",
-			"item"
-		]) visit(node[key]);
-	};
-	for (const script of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) try {
-		visit(JSON.parse(script[1]));
-	} catch {}
-	const empty = /class=["'][^"']*mlc-no-offers-to-show/.test(html);
-	if (!products.length && !listing && !empty) throw Error("Nie potwierdzono danych ofert w odpowiedzi źródła. Sprawdź wyszukiwanie ręcznie.");
-	const offers = [];
-	for (const product of products) for (const data of Array.isArray(product.offers) ? product.offers : [product.offers]) {
-		if (!data || data["@type"] === "AggregateOffer" || data.priceCurrency !== "PLN") continue;
-		let url;
-		try {
-			url = new URL(data.url || product.url);
-		} catch {
-			continue;
-		}
-		if (url.protocol !== "https:" || url.hostname !== "allegrolokalnie.pl" || url.port || url.username || url.password || !/^\/oferta\/[^/]+$/.test(url.pathname)) continue;
-		const condition = /UsedCondition/.test(data.itemCondition || product.itemCondition || "") ? "used" : /NewCondition/.test(data.itemCondition || product.itemCondition || "") ? "new" : "unknown";
-		const offer = baseOffer(book, clean(product.name || ""), url.href, "Allegro Lokalnie", Number(data.price), "PLN", condition, checked, true);
-		if (!offer) continue;
-		const availability = String(data.availability || "");
-		offer.available = /InStock|LimitedAvailability/.test(availability);
-		offer.availabilityKnown = /InStock|LimitedAvailability|OutOfStock|Discontinued|SoldOut/.test(availability);
-		offer.image = typeof product.image === "string" ? product.image : product.image?.url || null;
-		offers.push(offer);
-	}
-	return [...new Map(offers.map((offer) => [offer.url, offer])).values()];
-}
-async function allegroOffers(book, checked, read) {
-	const queries = [...new Set([book.pl, book.title].filter(Boolean))];
-	const results = await Promise.all(queries.map(async (query) => {
-		try {
-			return { offers: parseAllegroListing(await read("https://allegrolokalnie.pl/oferty/q/" + encodeURIComponent(query)), book, checked) };
-		} catch (error) {
-			return {
-				offers: [],
-				error
-			};
-		}
-	}));
-	const failures = results.filter((r) => r.error);
-	if (failures.length === queries.length) throw failures[0].error;
-	return {
-		offers: [...new Map(results.flatMap((r) => r.offers).map((o) => [o.url, o])).values()],
-		partial: failures.length > 0,
-		coverage: `Sprawdzono ${queries.length - failures.length}/${queries.length} wyszukiwań tytułu PL/EN.`
-	};
-}
-//#endregion
-//#region lib/source-access.ts
-var manualSourceDetails = {
-	"Pierwodruk": {
-		url: "https://antykwariatpierwodruk.pl/sklep/",
-		reason: "Sklep i wyszukiwarka zwracają HTTP 500 podczas weryfikacji 10.10.2026.",
-		alternative: "Otwórz sklep i sprawdź ofertę ręcznie. Automatyczny odczyt wymaga przywrócenia działania strony."
-	},
-	"Mepel": {
-		url: "https://mepel.pl/ksiazki",
-		reason: "Odczyt strony produktu jest blokowany również z alternatywnego serwera Vercel (HTTP 403).",
-		alternative: "Wyszukaj tytuł w sklepie i dodaj konkretną ofertę ręcznie. Poprzednie oferty pozostają w historii."
-	},
-	"ERLI": {
-		url: "https://erli.pl/kategoria?phrase=Warcraft",
-		reason: "Wyszukiwanie jest dostępne, ale sprawdzone strony produktów blokują odczyt (HTTP 403).",
-		alternative: "Wyszukaj tytuł i dodaj cenę konkretnego produktu ręcznie. Sama wyszukiwarka nie potwierdza stanu ani dostępności."
-	},
-	"SkupSzop": {
-		url: "https://skupszop.pl/",
-		reason: "Nie potwierdzono działającego czytnika wyników i cen produktów.",
-		alternative: "Sprawdź egzemplarz w sklepie i dodaj ofertę ręcznie; „jak nowa” oznacza książkę używaną."
-	},
-	"Allegro": {
-		url: "https://allegro.pl/listing?string=Warcraft+książka",
-		reason: "Brak działającego publicznego odczytu cen w tym skanerze.",
-		alternative: "Wyszukaj tytuł i dodaj ofertę ręcznie. Allegro Lokalnie ma osobny skaner."
-	},
-	"Czytam.pl": {
-		url: "https://czytam.pl/szukaj?q=Warcraft",
-		reason: "Wyniki i część danych produktu są uzupełniane przez JavaScript; pełnego odczytu nie potwierdzono.",
-		alternative: "Wyszukaj tytuł w sklepie i dodaj ofertę ręcznie; dostępna cena w kodzie strony nie wystarcza do potwierdzenia dostępności."
-	},
-	"Antykwariat Evos": {
-		url: "https://antykwariatevos.pl/",
-		reason: "Brak zweryfikowanego czytnika wyszukiwarki i danych egzemplarza.",
-		alternative: "Publiczna wyszukiwarka sklepu jest dostępna; aktualną cenę i stan sprawdź ręcznie."
-	},
-	"Toruński Antykwariat Księgarski": {
-		url: "https://antykwariat-torun.pl/",
-		reason: "Brak zweryfikowanego czytnika wyszukiwarki i danych egzemplarza.",
-		alternative: "Użyj wyszukiwarki sklepu i dodaj konkretną ofertę ręcznie."
-	},
-	"Antykwariat Warszawa": {
-		url: "https://antykwariatwaw.pl/",
-		reason: "Brak zweryfikowanego czytnika cen i dostępności.",
-		alternative: "Użyj wyszukiwarki sklepu. Link do wyszukiwania tytułu jest też w szczegółach książki."
-	},
-	"Antykwariat Gelber": {
-		url: "https://antykwariat-gelber.pl/pl/shop/search/1/?search=Warcraft",
-		reason: "Nie potwierdzono pełnego automatycznego odczytu danych egzemplarza.",
-		alternative: "Sklep udostępnia publiczny formularz wyszukiwania; dodaj cenę i stan ręcznie."
-	},
-	"Antykwariat Hobbit": {
-		url: "https://antykwariathobbit.pl/?post_type=product&s=Warcraft",
-		reason: "Nie potwierdzono działającego czytnika ofert i stanu egzemplarza.",
-		alternative: "Wyszukiwanie produktów jest dostępne; odczyt ceny i dostępności wymaga dalszej weryfikacji."
-	},
-	"Ceneo": {
-		url: "https://www.ceneo.pl/;szukaj-warcraft",
-		reason: "Źródło informacyjne; nie jest objęte automatycznym skanem.",
-		alternative: "Porównaj sklepy i sprawdź cenę w sklepie docelowym."
-	},
-	"World of Books": {
-		url: "https://www.worldofbooks.com/en-gb/search?text=Warcraft",
-		reason: "Przygotowany link do wyszukiwania; brak zweryfikowanego czytnika.",
-		alternative: "Sprawdź wydanie, stan i dostawę do Polski, następnie dodaj ofertę ręcznie."
-	}
-};
-var isManualScanSource = (name) => Object.hasOwn(manualSourceDetails, name);
-//#endregion
-//#region lib/vinted-policy.ts
-function vintedFailure(status, header = null, now = Date.now(), captcha = false) {
-	const code = captcha ? "CAPTCHA" : status === 429 ? "HTTP_429" : status === 403 ? "HTTP_403" : "HTTP_" + status;
-	const fallback = captcha ? 15 * 6e4 : status === 403 ? 5 * 6e4 : 3e4;
-	const seconds = header?.trim() && /^\d+$/.test(header.trim()) ? Number(header) * 1e3 : NaN;
-	const parsed = Number.isFinite(seconds) ? now + seconds : header ? Date.parse(header) : NaN;
-	const until = Number.isFinite(parsed) ? Math.max(now + fallback, parsed) : now + fallback;
-	const reason = captcha ? "Vinted wymaga CAPTCHA." : status === 429 ? "Vinted ograniczył liczbę zapytań (HTTP 429)." : status === 403 ? "Vinted odmówił dostępu (HTTP 403)." : `Vinted zwrócił błąd HTTP ${status}.`;
-	return Object.assign(new Error(reason), {
-		code,
-		retryAfter: new Date(until).toISOString()
-	});
-}
-function waitVinted(ms, signal) {
-	return new Promise((resolve, reject) => {
-		signal.throwIfAborted();
-		const stop = () => {
-			clearTimeout(timer);
-			signal.removeEventListener("abort", stop);
-			reject(signal.reason);
-		};
-		const timer = setTimeout(() => {
-			signal.removeEventListener("abort", stop);
-			resolve();
-		}, Math.max(0, ms));
-		signal.addEventListener("abort", stop, { once: true });
-	});
-}
 //#endregion
 //#region lib/antiquarian-sources.ts
 var antiquarianSources = [
+	{
+		key: "skrypt",
+		name: "Antykwariat Skrypt",
+		url: "https://skrypt.com.pl/"
+	},
+	{
+		key: "zakladka",
+		name: "Antykwariat Zakładka",
+		url: "https://antykwariat-zakladka.pl/"
+	},
+	{
+		key: "filar",
+		name: "Antykwariat Filar",
+		url: "https://antykwariat-filar.pl/"
+	},
+	{
+		key: "grochowski",
+		name: "Antykwariat Grochowski",
+		url: "https://agrochowski.pl/"
+	},
+	{
+		key: "omnibus",
+		name: "Antykwariat Omnibus",
+		url: "https://www.antykwariatomnibus.pl/"
+	},
+	{
+		key: "vivarium",
+		name: "Antykwariat Vivarium",
+		url: "https://vivarium.com.pl/"
+	},
+	{
+		key: "exlibris",
+		name: "Antykwariat Exlibris",
+		url: "https://antykwariat-exlibris.com/"
+	},
+	{
+		key: "atticus",
+		name: "Antykwariat Atticus",
+		url: "https://www.atticus.pl/"
+	},
+	{
+		key: "bukinist",
+		name: "Ex Libris Antiqua",
+		url: "https://bukinist.pl/"
+	},
 	{
 		key: "evos",
 		name: "Antykwariat Evos",
@@ -422,21 +296,34 @@ var normalizeBookText = (s) => s.replace(/&#(?:x([0-9a-f]+)|(\d+));/gi, (_, hex,
 	iii: 3,
 	iv: 4
 }[roman]);
-var bibliography = bibliography_default;
-var knownAuthors = [...new Set(bibliography.flatMap((book) => book.authors))];
+var unrelated = /\b(mtg|cd|dvd|vinyl|lp|ep|lego|stl)\b|blu[ -]?ray|magic:? the gathering|pok[eé]mon|yu-?gi-?oh|karta kolekcjonerska|rodzaj:? single|figurki?|miniatures?|joytoy|funko|steam|battle net key|game key|abonament|subskrypcj|ebook|e[ -]?book|audio[ -]?book|kindle|\b(epub|mobi|mp3)\b|digital download|wydanie cyfrowe|gra planszowa|gra karciana|board game|płyta|płyty|plyta|plyty|winyl|soundtrack|album muzyczny|music album|bookmark|poster|artwork|dust jacket only|book cover only|resin|unpainted|painted|action figure|dreadknight|combat patrol|battleforce|sprue|on sprue|assembled|citadel miniature|plastic kit|model kit/i;
+var specificAuthors = (values) => [...new Set(values.flatMap((value) => value.split(/\s*[\/;]\s*/)).map((value) => value.replace(/\s+i inni.*$/i, "").trim()).filter((value) => value && !/r[oó][zż]ni|various|redaktorzy|autorzy|weryfikacji|nieustalon/i.test(value)))];
+var knownAuthors = specificAuthors(bibliography_default.flatMap((book) => book.authors));
+var bibliography = bibliography_default.map((row) => ({
+	...row,
+	authors: specificAuthors(row.authors)
+}));
 var metadataIndex = /* @__PURE__ */ new Map();
-var identity = (s) => normalizeBookText(s).replace(/^(?:world of warcraft|warcraft) /, "").trim();
-for (const book of bibliography) for (const name of book.names) metadataIndex.set(identity(name), book);
+for (const [index, book] of bibliography.entries()) for (const name of book.names) {
+	const key = normalizeBookText(name);
+	if (!metadataIndex.has(key)) metadataIndex.set(key, index);
+}
 function bookMetadata(names) {
-	return names.map((name) => metadataIndex.get(identity(name))).find(Boolean);
+	let first = Infinity;
+	for (const name of names) {
+		const index = metadataIndex.get(normalizeBookText(name));
+		if (index !== void 0 && index < first) first = index;
+	}
+	return Number.isFinite(first) ? bibliography[first] : void 0;
 }
 function bookAuthors(book) {
-	return bookMetadata([book.title, book.pl || ""])?.authors || knownAuthors.filter((a) => normalizeBookText(book.raw || "").includes(normalizeBookText(a)));
+	return book.author && !/r[oó][zż]ni|various|weryfikacji|nieustalon/i.test(book.author) ? specificAuthors([book.author]) : bookMetadata([book.title, book.pl || ""])?.authors || knownAuthors.filter((a) => normalizeBookText((book.raw || "") + " " + (book.series || "")).includes(normalizeBookText(a)));
 }
-var unrelated = /\b(?:mtg|cd|dvd|vinyl|lego|stl|kindle|steam|battle net key|game key|kod aktywacyjny|karta kolekcjonerska|tcg)\b|blu[ -]?ray|figurki?|miniatures?|funko|ebook|e-book|audiobook|gra planszowa|gra karciana|board game|płyta|plyta|soundtrack|bookmark|poster|dust jacket only|book cover only|action figure|game time|abonament|subskrypcj|koszulka|t shirt|mousepad|podkladka pod mysz|pluszak|plush/i;
+var warhammerContext = /\b(warcraft|world of warcraft|blizzard)\b/;
+var nonFictionProduct = /\b(codex|codices|battletome|rulebook|rule book|core rules|core book|army book|campaign book|campaign supplement|journal tactica|legions imperialis|liber hereticus|liber astartes|warcry|warscroll|enchantment cards|transfer sheet|rpg|podrecznik|podreczniki|komiks|komiksy|comics?|manga|datasheets?|datacards?|miniatury|figurka|figurki|figurek|figurine|figurines|kaseta|kasety|cassette|vinyl|lipstick|pomadka|mascara|gold coins?|medal|moneta|monety|asg|gbbr|magazynki|zdalnie sterowany|zdalnego sterowania)\b/;
 var genericTitles = new Set([
 	"omnibus",
-	"archive",
+	"the omnibus",
 	"antologia",
 	"anthology",
 	"powiesc",
@@ -447,73 +334,109 @@ var genericTitles = new Set([
 	"ksiazki",
 	"trilogy",
 	"trylogia",
-	"warcraft",
-	"world of warcraft"
+	"wydanie zbiorcze"
 ]);
-var identityBookNames = (names) => [...new Set([...names, ...bookMetadata(names)?.names || []].map(identity).filter((name) => name && !genericTitles.has(name)))];
-var padded = (text) => " " + text + " ";
+var identityBookNames = (names) => [...new Set([...names, ...bookMetadata(names)?.names || []].filter((n) => n && !genericTitles.has(normalizeBookText(n))).flatMap((n) => [
+	normalizeBookText(n),
+	normalizeBookText(n.replace(/ \([^)]*\)$/, "")),
+	normalizeBookText(n).replace(/\bthe omnibus\b/, "omnibus")
+]))];
+var authorNames = knownAuthors.flatMap((a) => {
+	const n = normalizeBookText(a);
+	return [n, n.split(" ").reverse().join(" ")];
+});
+var listingIdentity = (s) => {
+	let n = " " + normalizeBookText(s) + " ";
+	for (const author of authorNames) n = n.replace(" " + author + " ", " ");
+	return n.replace(/\b(paperback|hardback|hardcover|softcover|pb|hb|eng|english|pl|en|ksiazka|book|novel|nowy produkt|nowa|new|used|by|world of warcraft|warcraft|blizzard legends|insignis)\b/g, " ").replace(/\s+/g, " ").trim();
+};
+var authorTokens = (s) => normalizeBookText(s).split(" ").sort().join(" ");
 var authorMatches = (value, author) => {
-	const n = normalizeBookText(author), text = padded(normalizeBookText(value));
-	const parts = n.split(" "), short = parts[0] + " " + parts.at(-1);
-	return text.includes(padded(n)) || text.includes(padded(n.split(" ").reverse().join(" "))) || parts.length > 2 && text.includes(padded(short));
+	const n = normalizeBookText(author), reverse = n.split(" ").reverse().join(" "), text = " " + normalizeBookText(value) + " ";
+	return text.includes(" " + n + " ") || text.includes(" " + reverse + " ") || n.split(" ").length > 2 && text.includes(" " + n.split(" ")[0] + " " + n.split(" ").at(-1) + " ") || authorTokens(value) === authorTokens(author);
 };
-var listingIdentity = (title) => {
-	let n = padded(normalizeBookText(title));
-	for (const author of knownAuthors) n = n.replace(padded(normalizeBookText(author)), " ").replace(padded(normalizeBookText(author).split(" ").reverse().join(" ")), " ");
-	return n.replace(/\b(world of warcraft|warcraft|blizzard legends|paperback|hardback|hardcover|softcover|pb|hb|english|angielski|polski|pl|en|ksiazka|book|novel|powiesc|nowa|nowy|new|used|by|insignis|twarda oprawa|miekka oprawa)\b/g, " ").replace(/\s+/g, " ").trim();
-};
+var longerBookTitles = {};
+for (const row of bibliography) for (const name of row.names) {
+	const key = normalizeBookText(name);
+	longerBookTitles[key] = bibliography.filter((other) => other !== row).flatMap((other) => other.names.map(normalizeBookText)).filter((candidate) => candidate.startsWith(key + " "));
+}
 function classifyPaperBook(title, names, evidence = {}) {
-	const text = padded(normalizeBookText(title));
-	if (unrelated.test(normalizeBookText(title))) return {
+	if (unrelated.test(title)) return {
 		state: "rejected",
-		reason: "Gra, akcesorium, figurka lub wydanie cyfrowe zamiast papierowej książki."
+		reason: "Płyta, gra, figurka lub wydanie cyfrowe."
 	};
-	const identities = identityBookNames(names), meta = bookMetadata(names);
-	if (!identities.some((name) => text.includes(padded(name)))) return {
-		state: "rejected",
-		reason: "Tytuł nie pasuje do książki."
-	};
-	if (bibliography.some((other) => other !== meta && identityBookNames(other.names).some((candidate) => identities.some((name) => candidate.startsWith(name + " ")) && text.includes(padded(candidate))))) return {
-		state: "rejected",
-		reason: "Pełny tytuł wskazuje inną książkę z katalogu."
-	};
+	const text = " " + normalizeBookText(title) + " ", identities = identityBookNames(names);
 	if (/\b(warhammer|horus heresy|black library|starcraft|diablo|harry potter|star wars)\b/.test(text)) return {
 		state: "rejected",
 		reason: "Oferta wskazuje inne uniwersum."
 	};
-	if (/\b(rpg|rulebook|gra komputerowa|komiks|manga|comics?)\b/.test(text)) return {
+	if (!identities.some((n) => text.includes(" " + n + " ") || n.startsWith("the ") && listingIdentity(title) === n.slice(4))) return {
 		state: "rejected",
-		reason: "Inny rodzaj publikacji niż książka z katalogu."
+		reason: "Tytuł nie pasuje do książki."
 	};
-	const expected = evidence.authors?.length ? evidence.authors : meta?.authors || [];
-	if (evidence.author && expected.length && !expected.some((author) => authorMatches(evidence.author, author) || normalizeBookText(evidence.author).includes(normalizeBookText(author).split(" ").at(-1)))) return {
+	const volume = (value) => {
+		const match = normalizeBookText(value).match(/\b(?:tom|volume|vol|czesc|part)\s+(\d+|[ivx]+)\b/);
+		if (!match) return null;
+		return {
+			i: 1,
+			ii: 2,
+			iii: 3,
+			iv: 4,
+			v: 5,
+			vi: 6,
+			vii: 7,
+			viii: 8,
+			ix: 9,
+			x: 10
+		}[match[1]] || Number(match[1]);
+	};
+	const expectedVolumes = names.map(volume).filter((v) => v !== null), listedVolume = volume(title);
+	if (expectedVolumes.length && listedVolume !== null && !expectedVolumes.includes(listedVolume)) return {
 		state: "rejected",
-		reason: "Autor podany przez sklep nie pasuje."
+		reason: "Oferta wskazuje inny tom lub część książki."
 	};
-	const present = knownAuthors.filter((author) => authorMatches(title, author));
-	if (expected.length && present.length && !present.some((author) => expected.some((wanted) => normalizeBookText(author) === normalizeBookText(wanted)))) return {
+	if (identities.some((name) => (longerBookTitles[name] || []).some((longer) => !identities.includes(longer) && text.includes(" " + longer + " ")))) return {
+		state: "rejected",
+		reason: "Pełny tytuł wskazuje inną książkę z katalogu."
+	};
+	const meta = bookMetadata(names), expected = evidence.authors?.length ? evidence.authors : meta?.authors || [];
+	const authorText = " " + normalizeBookText(title + " " + (evidence.author || "")) + " ";
+	if (nonFictionProduct.test(text)) return {
+		state: "rejected",
+		reason: "Podręcznik do gry, komiks albo figurka zamiast książki z katalogu."
+	};
+	const present = knownAuthors.filter((a) => authorText.includes(" " + normalizeBookText(a) + " "));
+	if (expected.length && present.some((a) => !expected.some((e) => normalizeBookText(a) === normalizeBookText(e))) || /\bharold bloom\b/.test(authorText)) return {
 		state: "rejected",
 		reason: "Inny autor niż szukanej książki."
 	};
-	if (evidence.isbn && meta?.editions.some((edition) => edition.isbn === evidence.isbn.replace(/[^0-9X]/g, ""))) return {
-		state: "matched",
-		reason: "Potwierdzony ISBN papierowego wydania."
+	if (evidence.author && expected.length && !expected.some((a) => authorMatches(evidence.author, a)) && !expected.some((a) => normalizeBookText(evidence.author).includes(normalizeBookText(a).split(" ").at(-1)))) return {
+		state: "rejected",
+		reason: "Autor podany przez sklep nie pasuje."
 	};
-	if (expected.some((author) => authorMatches(title, author) || evidence.author && authorMatches(evidence.author, author))) return {
+	if (evidence.author && expected.length && !expected.some((a) => authorMatches(evidence.author, a))) return {
+		state: "review",
+		confidence: "likely",
+		reason: "Sklep podał tylko skrót lub niepełne dane autora. Potwierdź autora i wydanie."
+	};
+	if (evidence.isbn && meta?.editions.some((e) => e.isbn === evidence.isbn.replace(/[^0-9X]/g, ""))) return {
+		state: "matched",
+		reason: "Potwierdzony ISBN wydania."
+	};
+	if (expected.some((a) => authorMatches(title, a) || evidence.author && authorMatches(evidence.author, a))) return {
 		state: "matched",
 		reason: "Tytuł i właściwy autor."
 	};
-	const exact = identities.includes(listingIdentity(title));
-	const universe = /\bwarcraft\b/.test(text), paper = /\b(book|books|novel|paperback|hardback|hardcover|ksiazka|ksiazki|powiesc|tom|kronika|chronicle)\b/.test(text);
-	const publisher = /insignis|blizzard|pocket books|titan books|del rey|dark horse/i.test(evidence.publisher || "");
-	if (exact && (publisher || universe && paper)) return {
+	const exact = identities.some((n) => listingIdentity(title) === n || n.startsWith("the ") && listingIdentity(title) === n.slice(4));
+	if ((!identities.every((n) => n.split(" ").length <= 2) || exact) && (/insignis|blizzard|pocket books|titan books|del rey|dark horse/i.test(evidence.publisher || "") || /blizzard/i.test(evidence.publisher || "") && exact || warhammerContext.test(text) && /\b(book|books|novel|paperback|hardback|hardcover|ksiazka|ksiazki|powiesc|powiesci|tom)\b/.test(text))) return {
 		state: "matched",
-		reason: "Pełny tytuł i kontekst książki Warcraft."
+		reason: "Tytuł i kontekst Warcraft."
 	};
+	const weak = !knownAuthors.some((a) => authorMatches(title, a) || evidence.author && authorMatches(evidence.author, a)) && !(warhammerContext.test(text) && exact) && !(/blizzard/i.test(evidence.publisher || "") && exact);
 	return {
 		state: "review",
-		confidence: universe || publisher ? "likely" : "weak",
-		reason: universe || publisher ? "Kontekst Warcraft; autor lub dokładne wydanie wymagają potwierdzenia." : "Sam tytuł nie potwierdza autora ani papierowego wydania."
+		confidence: weak ? "weak" : "likely",
+		reason: weak ? "Słabe dopasowanie: sam tytuł lub jego fragment, bez potwierdzenia autora lub właściwego wydania." : "Tytuł i związek z Warcraftem; autor lub wydanie wymagają potwierdzenia."
 	};
 }
 //#endregion
@@ -528,7 +451,22 @@ var listReaders = [
 	"kwadryga",
 	"poczytaj"
 ];
+var usedWooReaders = [
+	"skrypt",
+	"zakladka",
+	"filar",
+	"exlibris"
+];
+var publicCatalogReaders = ["omnibus", "bukinist"];
+var additionalAntiquarianReaders = [
+	"grochowski",
+	"vivarium",
+	"atticus",
+	...publicCatalogReaders
+];
 var automaticAntiquarians = [
+	...additionalAntiquarianReaders,
+	...usedWooReaders,
 	"gryf",
 	"blackbooks",
 	"kulturawraca",
@@ -546,6 +484,15 @@ var newReaders = [
 	"jaskiniatrolla"
 ];
 var antiquarianQueries = {
+	skrypt: "https://skrypt.com.pl/?post_type=product&s={q}",
+	zakladka: "https://antykwariat-zakladka.pl/sklep/?post_type=product&s={q}",
+	filar: "https://antykwariat-filar.pl/?post_type=product&s={q}",
+	grochowski: "https://agrochowski.pl/pl_PL/searchquery/{q}/1/phot/5",
+	omnibus: "https://www.antykwariatomnibus.pl/search/{q}/",
+	vivarium: "https://vivarium.com.pl/szukaj/{q}",
+	atticus: "https://www.atticus.pl/pl/products?slug={q}",
+	exlibris: "https://antykwariat-exlibris.com/?post_type=product&s={q}",
+	bukinist: "https://bukinist.pl/?post_type=product&s={q}",
 	conroy: "https://www.antykwariat-conroy.pl/advanced_search_result.php?search_in_description=1&keywords={q}",
 	poznan: "https://www.antykwariat.pl/pl/searchquery/{q}/1/full/5",
 	bliskiestrony: "https://bliskiestrony.eu/szukaj?s={q}",
@@ -642,10 +589,13 @@ var encodeQuery = (title, shop) => shop.key === "nws" ? [...title].map((c) => {
 	const i = chars.indexOf(c);
 	return i < 0 ? encodeURIComponent(c) : "%" + bytes[i];
 }).join("") : encodeURIComponent(title);
-var additionalSearchUrl = (b, shop) => shop.search ? shop.search.replace("{q}", encodeQuery(shop.englishFirst ? b.title : b.pl || b.title, shop)) : shop.url;
+var additionalSearchUrl = (b, shop) => shop.search ? shop.search.replace("{q}", encodeQuery(scanTitle(b, shop.englishFirst), shop)) : shop.url;
 function additionalSearchUrls(b, shop) {
 	const first = additionalSearchUrl(b, shop);
+	if (b.searchLanguage && b.searchLanguage !== "all") return [first];
 	if (!shop.search || ![
+		...additionalAntiquarianReaders,
+		...usedWooReaders,
 		...listReaders,
 		"hegemon",
 		"panmysza",
@@ -666,6 +616,14 @@ function productUrl(raw, shop) {
 		const u = new URL(clean(raw), shop.url);
 		if (u.origin !== new URL(shop.url).origin || u.username || u.password) return null;
 		const patterns = {
+			exlibris: /^\/sklep\/[^/]+\/$/,
+			bukinist: /^\/produkt\/[^/]+\/$/,
+			omnibus: /^\/sklep\/(?:[^/]+\/)+$/,
+			atticus: /^\/pl\/product\/[^/]+$/,
+			vivarium: /^\/\d+\/[^/]+$/,
+			skrypt: /^\/product\/[^/]+\/$/,
+			zakladka: /^\/produkt\/[^/]+\/$/,
+			filar: /^\/sklep\/[^/]+\/$/,
 			conroy: /^\/[^/]+-p-\d+\.html$/,
 			nws: /^\/oferta-\d+-\d+-[^/]+\.html$/,
 			bookway: /^\/ksiazka\/[^/]+$/,
@@ -703,7 +661,16 @@ function normalizeStoreListing(html, shop) {
 function discoverAdditionalProducts(html, b, shop) {
 	html = normalizeStoreListing(html, shop);
 	const urls = /* @__PURE__ */ new Set();
-	if (newReaders.includes(shop.key)) {
+	if (shop.key === "grochowski") {
+		for (const n of schemas(html)) if (n["@type"] === "ItemList") for (const entry of n.itemListElement || []) {
+			const item = entry.item;
+			if (item && matches(b, clean(item.name || ""), true)) {
+				const url = productUrl(item.url || item.offers?.url || "", shop);
+				if (url) urls.add(url);
+			}
+		}
+	}
+	if ([...newReaders, ...usedWooReaders].includes(shop.key)) {
 		const canonical = canonicalProductUrl(html, shop), title = clean(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "");
 		if (canonical && matches(b, title, true)) urls.add(canonical);
 	}
@@ -867,7 +834,212 @@ function sourceListProductNodes(html, shop, pageUrl, nodes) {
 		};
 	}).filter(Boolean);
 }
+function usedWooProductNodes(html, shop, pageUrl) {
+	const safe = productUrl(pageUrl, shop);
+	if (!safe) return [];
+	const dom = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+	const heading = dom.match(/<h[12]\b[^>]*class=["'][^"']*\bproduct_title\b[^"']*["'][^>]*>([\s\S]*?)<\/h[12]>/i);
+	if (!heading) return [];
+	const title = clean(heading[1]);
+	let main = dom.slice(heading.index);
+	const boundary = main.search(/<section[^>]*class=["'][^"']*\b(?:related|upsells)\b/i);
+	if (boundary >= 0) main = main.slice(0, boundary);
+	const ownSchema = schemas(html).find((n) => n["@type"] === "Product" && clean(n.name || "") === title && productUrl(n.url || String(n["@id"] || "").split("#")[0], shop) === safe);
+	const description = clean(main.match(/<div[^>]*id=["']tab-description["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || (shop.key === "exlibris" ? ownSchema?.description : "") || "");
+	const price = clean(main.match(/<p[^>]*class=["'][^"']*\bprice\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)?.[1]?.replace(/<del\b[^>]*>[\s\S]*?<\/del>/gi, "") || "").match(/(?:^|\s)(\d[\d\s]*(?:[,.]\d{2}))\s*zł(?:\s|$)/)?.[1]?.replace(/\s/g, "").replace(",", ".");
+	if (!price || !description || !/\d+\s+stron|\bstron\s*:?\s*\d+|\bs\.\s*(?:[IVXL]+,)?\d+|oprawa\s*:?\s*(?:miękka|twarda)|\bopr\.\s*\w+|ISBN/i.test(description)) return [];
+	const condition = /stan\s*:?\s*now[ay]|książka nowa|nieczytan/i.test(description) ? "NewCondition" : /stan\s*:?\s*(?:dobry|bardzo dobry|bdb|db)|otarcia|załamania|piecząt|piecz\.|sfatygowan|przybrudzon/i.test(description) ? "UsedCondition" : "";
+	return schemas(html).filter((n) => n["@type"] === "Product" && clean(n.name || "") === title && productUrl(n.url || String(n["@id"] || "").split("#")[0], shop) === safe).map((n) => ({
+		...n,
+		"@type": "Book",
+		name: title,
+		url: safe,
+		description,
+		author: n.author || clean(main.match(/<tr[^>]*class=["'][^"']*attribute_pa_autor["'][^>]*>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i)?.[1] || ""),
+		publisher: n.publisher || clean(main.match(/<tr[^>]*class=["'][^"']*attribute_pa_wydawca["'][^>]*>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i)?.[1] || ""),
+		isbn: n.isbn || description.match(/ISBN\s*:?\s*((?:97[89])[\d-]{10,17})/i)?.[1]?.replace(/-/g, ""),
+		offers: (Array.isArray(n.offers) ? n.offers : [n.offers]).filter((o) => o && o["@type"] !== "AggregateOffer" && productUrl(o.url || safe, shop) === safe).map((o) => ({
+			...o,
+			url: safe,
+			price,
+			priceCurrency: "PLN",
+			itemCondition: condition
+		}))
+	}));
+}
+function dedicatedAntiquarianNodes(html, shop, pageUrl) {
+	const safe = productUrl(pageUrl, shop);
+	if (!safe) return [];
+	const dom = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+	if (shop.key === "atticus") {
+		const title = clean(dom.match(/<h1[^>]*id=["']sylius-product-name["'][^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "");
+		const price = clean(dom.match(/<span[^>]*id=["']product-price["'][^>]*>([^<]*)/i)?.[1] || "").match(/^([\d\s]+(?:[,.]\d{2}))\s*zł$/)?.[1]?.replace(/\s/g, "").replace(",", ".");
+		if (!title || !price || /^\[(?:mapa|rysunek|rycina|litografia|plakat|fotografia|pocztówka)/i.test(title)) return [];
+		return schemas(html).filter((n) => n["@type"] === "Product" && clean(n.name || "") === title && productUrl(n.url || "", shop) === safe && /\bs\.\s*(?:[IVXL]+,\s*)?\d+|\d+\s+(?:stron|s\.)|ISBN|oprawa/i.test(clean(n.description || ""))).map((n) => ({
+			...n,
+			"@type": "Book",
+			offers: (Array.isArray(n.offers) ? n.offers : [n.offers]).filter((o) => o && productUrl(o.url || safe, shop) === safe && Number(o.price) === Number(price))
+		}));
+	}
+	if (shop.key === "vivarium") {
+		const start = dom.search(/<div[^>]*class=["']product-header["']/i);
+		if (start < 0) return [];
+		let main = dom.slice(start);
+		const end = main.search(/<h3>|<div[^>]*class=["']similar["']/i);
+		if (end >= 0) main = main.slice(0, end);
+		const title = clean(main.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "");
+		if (!title || !/href=["']\/kategoria\/ksiazki\//i.test(main)) return [];
+		const price = clean(main.match(/<div[^>]*class=["']price["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || "").match(/^([\d\s]+(?:[,.]\d{2})?)\s*zł$/)?.[1]?.replace(/\s/g, "").replace(",", ".");
+		if (!price) return [];
+		const description = clean(main.match(/<div[^>]*class=["']product-descr["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || "");
+		const ownId = new URL(safe).pathname.split("/")[1];
+		const cart = [...main.matchAll(/<div\b[^>]*data-add-to-cart-url=["']([^"']+)["'][^>]*>/gi)].some((m) => m[1] === "/koszyk/dodaj/" + ownId && !/\bdisabled\b/.test(m[0]));
+		return [{
+			"@type": "Book",
+			name: title,
+			url: safe,
+			description,
+			author: clean(main.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || ""),
+			publisher: clean(main.match(/<p[^>]*class=["']publisher["'][^>]*>([\s\S]*?)<\/p>/i)?.[1] || "").replace(/^Wydanie\s*:\s*/, ""),
+			offers: {
+				url: safe,
+				price,
+				priceCurrency: "PLN",
+				availability: cart ? "https://schema.org/InStock" : /niedostępn|sprzedan/i.test(clean(main)) ? "https://schema.org/OutOfStock" : "",
+				itemCondition: /stan\s*:?\s*(?:dobry|bardzo dobry|bdb|db)|sfatygowan|pożółk|przybrudzon/i.test(description) ? "UsedCondition" : /stan\s*:?\s*now[ay]/i.test(description) ? "NewCondition" : ""
+			}
+		}];
+	}
+	const heading = dom.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+	if (!heading) return [];
+	let main = dom.slice(heading.index);
+	const end = main.search(/<[^>]*id=["']box_productrelated["']|<footer\b/i);
+	if (end >= 0) main = main.slice(0, end);
+	if (productUrl(attribute(main.match(/<link[^>]*itemprop=["']url["'][^>]*>/i)?.[0] || "", "href"), shop) !== safe) return [];
+	const fields = /* @__PURE__ */ new Map();
+	for (const m of main.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+		const values = [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((x) => clean(x[1]));
+		if (values.length === 2) fields.set(values[0], values[1]);
+	}
+	const isbn = (fields.get("ISBN") || fields.get("EAN") || "").replace(/-/g, "");
+	if (!/^\d+$/.test(fields.get("Liczba stron") || "") && !/^97[89]\d{10}$/.test(isbn)) return [];
+	const description = clean(main.match(/<div[^>]*itemprop=["']description["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || "");
+	const priceTag = main.match(/<[^>]*itemprop=["']price["'][^>]*>([^<]*)/i);
+	const price = priceTag ? attribute(priceTag[0], "content") || clean(priceTag[1]) : "";
+	const currency = attribute(main.match(/<[^>]*itemprop=["']priceCurrency["'][^>]*>/i)?.[0] || "", "content");
+	const availability = attribute(main.match(/<[^>]*itemprop=["']availability["'][^>]*>/i)?.[0] || "", "href");
+	const state = fields.get("Stan książki") || "";
+	const condition = /now[ay]/i.test(state) ? "NewCondition" : /dobry|dostateczny|mierny|\b[1-5]\b/i.test(state) || /pożółk|pobibliotecz|przybrudzon|sfatygowan/i.test(description) ? "UsedCondition" : "";
+	return [{
+		"@type": "Book",
+		name: clean(heading[1]),
+		url: safe,
+		isbn,
+		description,
+		author: fields.get("Autor"),
+		publisher: fields.get("Wydawnictwo"),
+		offers: {
+			url: safe,
+			price,
+			priceCurrency: currency,
+			availability,
+			itemCondition: condition
+		}
+	}];
+}
+function parsePublicAntiquarianCatalog(rows, b, checked, shop) {
+	if (!Array.isArray(rows) || rows.some((n) => !n || typeof n !== "object" || !Number.isInteger(n.id) || typeof n.name !== "string" || typeof n.permalink !== "string")) throw Error("Nieprawidłowa odpowiedź publicznego katalogu antykwariatu.");
+	const offers = [];
+	let unconfirmed = 0;
+	for (const n of rows) {
+		const title = clean(n.name);
+		if (!matches(b, title, true)) continue;
+		const attr = (pattern) => clean((n.attributes || []).filter((a) => pattern.test(String(a.name || "").trim())).flatMap((a) => (a.terms || []).map((t) => t.name || "")).join(", "));
+		const description = clean(n.description || "");
+		const format = attr(/nośnik|format|okładka|oprawa/i);
+		const isbn = attr(/^ISBN|^EAN/i).replace(/-/g, "");
+		const paper = /książka papierowa|miękka|twarda/i.test(format) || /^97[89]\d{10}$/.test(isbn) || /\bksiążk[aię]|\d+\s+stron|\bstron\s*:?\s*\d+/i.test(description);
+		const url = productUrl(n.permalink, shop);
+		const unit = n.prices?.currency_minor_unit;
+		const raw = n.prices?.price;
+		if (!url || !paper || /ebook|audiobook|epub|mobi|pdf/i.test(format) || n.type !== "simple" || !Number.isInteger(unit) || unit < 0 || unit > 4 || typeof raw !== "string" || !/^\d+$/.test(raw) || n.prices.currency_code !== "PLN" || typeof n.is_in_stock !== "boolean" || typeof n.is_purchasable !== "boolean") {
+			unconfirmed++;
+			continue;
+		}
+		const state = attr(/^Stan$/i);
+		const condition = /^now[ay]$/i.test(state) ? "new" : /^używan[ay]|dobry|bdb/i.test(state) ? "used" : "unknown";
+		const price = Number(raw) / 10 ** unit;
+		const buyerPrice = clean((n.price_html || "").replace(/<del\b[^>]*>[\s\S]*?<\/del>/gi, "").replace(/<span[^>]*class=["'][^"']*screen-reader-text[^"']*["'][^>]*>[\s\S]*?<\/span>/gi, "")).match(/^([\d\s]+(?:[,.]\d{2}))\s*zł$/)?.[1]?.replace(/\s/g, "").replace(",", ".");
+		if (!buyerPrice || Number(buyerPrice) !== price) {
+			unconfirmed++;
+			continue;
+		}
+		const author = attr(/^Autor$/i), publisher = attr(/^Wydawnictwo$/i);
+		const match = classifyPaperBook(title, [b.title, b.pl || ""], {
+			authors: bookAuthors(b),
+			author,
+			publisher,
+			isbn
+		});
+		if (match.state === "rejected") continue;
+		const offer = baseOffer(b, title, url, shop.name, price, "PLN", condition, checked, true);
+		if (!offer) {
+			unconfirmed++;
+			continue;
+		}
+		Object.assign(offer, {
+			author,
+			publisher,
+			isbn,
+			available: n.is_in_stock && n.is_purchasable === true,
+			availabilityKnown: true,
+			matchStatus: condition === "unknown" ? "review" : match.state,
+			matchReason: condition === "unknown" ? "Stan egzemplarza wymaga potwierdzenia." : match.reason
+		});
+		const language = attr(/^Język(?: publikacji)?$/i);
+		if (language) {
+			offer.language = /^polski$/i.test(language) ? "PL" : /^angielski$/i.test(language) ? "EN" : "?";
+			offer.languageVerified = offer.language !== "?";
+		}
+		offers.push(offer);
+	}
+	return {
+		offers,
+		unconfirmed
+	};
+}
+async function publicAntiquarianOffers(b, checked, shop, read) {
+	const titles = b.searchLanguage === "PL" ? [b.pl] : b.searchLanguage === "EN" ? [b.title] : [b.pl, b.title];
+	const terms = [...new Set(titles.filter((x) => !!x))];
+	const offers = [];
+	let pages = 0, partial = false, failures = 0, unconfirmed = 0, lastError;
+	for (const title of terms) for (let page = 1; page <= 3; page++) try {
+		const rows = JSON.parse(await read(shop.url + "wp-json/wc/store/v1/products?search=" + encodeURIComponent(title) + "&per_page=30&page=" + page));
+		const result = parsePublicAntiquarianCatalog(rows, b, checked, shop);
+		pages++;
+		offers.push(...result.offers);
+		unconfirmed += result.unconfirmed;
+		if (rows.length < 30) break;
+		if (page === 3) partial = true;
+	} catch (error) {
+		failures++;
+		lastError = error;
+		break;
+	}
+	if (!pages) throw lastError || Error("Nie odczytano katalogu antykwariatu.");
+	return {
+		offers: [...new Map(offers.map((o) => [o.id, o])).values()],
+		partial: partial || failures > 0 || unconfirmed > 0,
+		coverage: `Publiczny katalog antykwariatu: ${pages} stron po maksymalnie 30 produktów (limit 3 stron na tytuł).${failures ? " Nie odczytano części zapytań." : ""}${unconfirmed ? ` Nie potwierdzono ${unconfirmed} produktów.` : ""} Brak dopasowań nie potwierdza braku książki w całym sklepie.`
+	};
+}
 function antiquarianProductNodes(html, shop, pageUrl) {
+	if ([
+		"grochowski",
+		"vivarium",
+		"atticus"
+	].includes(shop.key)) return dedicatedAntiquarianNodes(html, shop, pageUrl);
+	if (usedWooReaders.includes(shop.key)) return usedWooProductNodes(html, shop, pageUrl);
 	const nodes = schemas(html);
 	if (listReaders.includes(shop.key)) return sourceListProductNodes(html, shop, pageUrl, nodes);
 	if (newReaders.includes(shop.key)) return newSourceProductNodes(html, shop, pageUrl, nodes);
@@ -1068,77 +1240,95 @@ function parseAdditionalProduct(html, b, checked, shop, url) {
 }
 var categories = /* @__PURE__ */ new Map();
 async function additionalStoreOffers(b, checked, shop, read) {
+	if (!shop.manual && publicCatalogReaders.includes(shop.key)) return publicAntiquarianOffers(b, checked, shop, read);
 	if (shop.manual) return {
 		offers: [],
 		manual: true,
-		coverage: shop.manualReason || "Otwórz sklep i dodaj cenę papierowej książki ręcznie."
+		coverage: shop.manualReason || "Warhammer.com: katalog dynamiczny. Otwórz dział i dodaj cenę papierowej książki ręcznie; automatycznych cen nie potwierdzono."
 	};
-	const listingUrls = [...additionalSearchUrls(b, shop), ...shop.extraUrls || []];
+	const listingUrls = [...new Set([...additionalSearchUrls(b, shop), ...shop.extraUrls || []])];
 	const urls = /* @__PURE__ */ new Set();
 	let listingFailures = 0;
 	let listingError;
 	let pagePartial = false;
 	let pagesRead = 0;
 	const pageReasons = [];
-	for (const listing of listingUrls) try {
-		const listingResult = await readSearchPages(listing, async (url) => {
-			if (shop.search) return normalizeStoreListing(await read(url), shop);
-			let cached = categories.get(url);
-			if (!cached || cached.until < Date.now()) {
-				cached = {
-					until: Date.now() + 12e4,
-					promise: read(url)
-				};
-				categories.set(url, cached);
-				cached.promise.catch(() => {
-					if (categories.get(url) === cached) categories.delete(url);
-				});
+	const listingProducts = await runLimited(listingUrls.map((listing) => async () => {
+		const urls = /* @__PURE__ */ new Set();
+		try {
+			const listingResult = await readSearchPages(listing, async (url) => {
+				if (shop.search) return normalizeStoreListing(await read(url), shop);
+				let cached = categories.get(url);
+				if (!cached || cached.until < Date.now()) {
+					cached = {
+						until: Date.now() + 12e4,
+						promise: read(url)
+					};
+					categories.set(url, cached);
+					cached.promise.catch(() => {
+						if (categories.get(url) === cached) categories.delete(url);
+					});
+				}
+				return normalizeStoreListing(await cached.promise, shop);
+			});
+			pagePartial ||= listingResult.partial;
+			if (listingResult.partial) pageReasons.push(listingResult.coverage);
+			pagesRead += listingResult.pages.length;
+			for (const page of listingResult.pages) {
+				const html = normalizeStoreListing(page.html, shop);
+				const discovered = discoverAdditionalProducts(html, b, shop);
+				if ([
+					"grochowski",
+					"vivarium",
+					"atticus"
+				].includes(shop.key)) {
+					const dom = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+					if (!(shop.key === "vivarium" ? /class=["']col-right search["']/.test(dom) && /<h1[^>]*>Książki i pocztówki wyszukane dla frazy/.test(dom) : shop.key === "grochowski" ? schemas(html).some((n) => n["@type"] === "ItemList") || /Nie znaleziono produktów|nie ma obecnie żadnych produktów|<h3>Wszystko się wyprzedało/i.test(dom) : /class=["'][^"']*sylius-product|id=["']products["']|Brak produktów|Brak wyników do wyświetlenia|Nie znaleziono/i.test(dom)) && !discovered.length) throw Error("Nie rozpoznano strony wyników antykwariatu.");
+				}
+				if (usedWooReaders.includes(shop.key)) {
+					const dom = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+					if (!discovered.length && !/<(?:div|p|ul|header)\b[^>]*class=["'][^"']*\b(?:woocommerce-no-products-found|woocommerce-products-header|products)\b/i.test(dom)) throw Error("Nie rozpoznano wyników antykwariatu.");
+				}
+				if (listReaders.includes(shop.key)) {
+					if (!{
+						conroy: /productListing|Brak produktów|class=["']titleProduct["']/,
+						poznan: /shop_product_list|Nie znaleziono produktów/,
+						bliskiestrony: /id=["'](?:js-product-list|products)|Nie znaleziono/,
+						authentic: /list-empty|mod-products-list|Nie znaleziono wyników/,
+						nws: /WYNIKI WYSZUKIWANIA|brak wyników/i,
+						bookway: /Ojej, brak wyników|views-row|view-ksiazki/,
+						kwadryga: /woocommerce-products-header|woocommerce-no-products-found|class=["'][^"']*products/,
+						poczytaj: /Wyniki wyszukiwania|wynik.{0,20}wyszuk|class=["'][^"']*(?:produkt|produkty)/i
+					}[shop.key].test(html) && !discovered.length) throw Error("Nie rozpoznano strony wyników sklepu.");
+				}
+				if (newReaders.includes(shop.key)) {
+					if (!(shop.key === "lagano" ? /Wyniki wyszukiwania produktów|product-card__title/.test(html) : shop.key === "szarlatan" ? /woocommerce-products-header|woocommerce-no-products-found/.test(html) : shop.key === "sobieski" ? /class=["'][^"']*product-list|id=["']no-results-notice/.test(html) : shop.key === "adumaru" ? /class=["']shop_product_list|Shop.pageType = 'shop_product_list'/.test(html) : shop.key === "passioland" ? /id=["']ProductGridContainer|template-search__results/.test(html) : /mod-products-list-page/.test(html)) && !(canonicalProductUrl(html, shop) && /<h1\b/i.test(html))) throw Error("Nie rozpoznano strony wyników sklepu.");
+				}
+				if ([
+					"gryf",
+					"blackbooks",
+					"kulturawraca"
+				].includes(shop.key)) {
+					if (!(shop.key === "gryf" ? /class=["'][^"']*template-search|id=["']ProductGridContainer/.test(html) : shop.key === "blackbooks" ? /id=["']js-product-list|id=["']products/.test(html) : /Lista produktów|product-list|Nie znaleziono produktów|nie ma obecnie żadnych produktów/i.test(html))) throw Error("Unrecognized search response");
+				}
+				if ([
+					"panmysza",
+					"mepel",
+					"zagrajnik",
+					"battlecult",
+					"osnowa",
+					"graal"
+				].includes(shop.key) && !discovered.length && !/shop_product_list|Shop.pageType|Lista produktów|product-list|Nie znaleziono produktów|nie ma obecnie żadnych produktów/i.test(html)) throw Error("Nie rozpoznano strony wyników sklepu.");
+				if (shop.key === "hegemon" && !discovered.length && !/id=["'](?:js-product-list|products)|class=["'][^"']*product-miniature|Nie znaleziono|brak wynik/i.test(html)) throw Error("Nie rozpoznano strony wyników Hegemona.");
+				for (const url of discovered) urls.add(url);
 			}
-			return normalizeStoreListing(await cached.promise, shop);
-		});
-		pagePartial ||= listingResult.partial;
-		if (listingResult.partial) pageReasons.push(listingResult.coverage);
-		pagesRead += listingResult.pages.length;
-		for (const page of listingResult.pages) {
-			const html = normalizeStoreListing(page.html, shop);
-			const discovered = discoverAdditionalProducts(html, b, shop);
-			if (listReaders.includes(shop.key)) {
-				if (!{
-					conroy: /productListing|Brak produktów|class=["']titleProduct["']/,
-					poznan: /shop_product_list|Nie znaleziono produktów/,
-					bliskiestrony: /id=["'](?:js-product-list|products)|Nie znaleziono/,
-					authentic: /list-empty|mod-products-list|Nie znaleziono wyników/,
-					nws: /WYNIKI WYSZUKIWANIA|brak wyników/i,
-					bookway: /Ojej, brak wyników|views-row|view-ksiazki/,
-					kwadryga: /woocommerce-products-header|woocommerce-no-products-found|class=["'][^"']*products/,
-					poczytaj: /Wyniki wyszukiwania|wynik.{0,20}wyszuk|class=["'][^"']*(?:produkt|produkty)/i
-				}[shop.key].test(html) && !discovered.length) throw Error("Nie rozpoznano strony wyników sklepu.");
-			}
-			if (newReaders.includes(shop.key)) {
-				if (!(shop.key === "lagano" ? /Wyniki wyszukiwania produktów|product-card__title/.test(html) : shop.key === "szarlatan" ? /woocommerce-products-header|woocommerce-no-products-found/.test(html) : shop.key === "sobieski" ? /class=["'][^"']*product-list|id=["']no-results-notice/.test(html) : shop.key === "adumaru" ? /class=["']shop_product_list|Shop.pageType = 'shop_product_list'/.test(html) : shop.key === "passioland" ? /id=["']ProductGridContainer|template-search__results/.test(html) : /mod-products-list-page/.test(html)) && !(canonicalProductUrl(html, shop) && /<h1\b/i.test(html))) throw Error("Nie rozpoznano strony wyników sklepu.");
-			}
-			if ([
-				"gryf",
-				"blackbooks",
-				"kulturawraca"
-			].includes(shop.key)) {
-				if (!(shop.key === "gryf" ? /class=["'][^"']*template-search|id=["']ProductGridContainer/.test(html) : shop.key === "blackbooks" ? /id=["']js-product-list|id=["']products/.test(html) : /Lista produktów|product-list|Nie znaleziono produktów|nie ma obecnie żadnych produktów/i.test(html))) throw Error("Unrecognized search response");
-			}
-			if ([
-				"panmysza",
-				"mepel",
-				"zagrajnik",
-				"battlecult",
-				"osnowa",
-				"graal"
-			].includes(shop.key) && !discovered.length && !/shop_product_list|Shop.pageType|Lista produktów|product-list|Nie znaleziono produktów|nie ma obecnie żadnych produktów/i.test(html)) throw Error("Nie rozpoznano strony wyników sklepu.");
-			if (shop.key === "hegemon" && !discovered.length && !/id=["'](?:js-product-list|products)|class=["'][^"']*product-miniature|Nie znaleziono|brak wynik/i.test(html)) throw Error("Nie rozpoznano strony wyników Hegemona.");
-			for (const url of discovered) urls.add(url);
+		} catch (e) {
+			listingFailures++;
+			listingError = e;
 		}
-	} catch (e) {
-		listingFailures++;
-		listingError = e;
-	}
+		return [...urls];
+	}), 2);
+	for (const products of listingProducts) for (const url of products) urls.add(url);
 	const offers = [];
 	let failures = listingFailures;
 	let unconfirmed = 0;
@@ -1164,75 +1354,283 @@ async function additionalStoreOffers(b, checked, shop, read) {
 	};
 }
 //#endregion
+//#region lib/books.json
+var books_default = /* @__PURE__ */ JSON.parse("[{\"id\":\"w0001\",\"title\":\"Day of the Dragon\",\"pl\":\"Dzień smoka\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Day of the Dragon · Dzień smoka · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-dzien-smoka/\",\"pdfYear\":2001,\"catalogOrder\":2,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\"]},{\"id\":\"w0002\",\"title\":\"Lord of the Clans\",\"pl\":\"Władca klanów\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Lord of the Clans · Władca klanów · Christie Golden\",\"uncertain\":false,\"note\":\"Polskie wydanie ISA. Wznowienie lub dostępność należy sprawdzić w ofercie.\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2001,\"catalogOrder\":3,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\",\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\"]},{\"id\":\"w0003\",\"title\":\"The Last Guardian\",\"pl\":\"Ostatni Strażnik\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"The Last Guardian · Ostatni Strażnik · Jeff Grubb\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-ostatni-straznik/\",\"pdfYear\":2001,\"catalogOrder\":4,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\"]},{\"id\":\"w0005\",\"title\":\"The Well of Eternity\",\"pl\":\"Studnia Wieczności\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":1,\"raw\":\"The Well of Eternity · Studnia Wieczności · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2004,\"catalogOrder\":5,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0006\",\"title\":\"The Demon Soul\",\"pl\":\"Demoniczna Dusza / Dusza Demona\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":2,\"raw\":\"The Demon Soul · Dusza Demona · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Starsze wydanie: Dusza Demona; w wydaniu zbiorczym: Demoniczna Dusza.\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2004,\"catalogOrder\":6,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0007\",\"title\":\"The Sundering\",\"pl\":\"Rozbicie\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":3,\"raw\":\"The Sundering · Rozbicie · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Trzeci tom Wojny Starożytnych. Nie mylić z The Shattering Christie Golden.\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2005,\"catalogOrder\":7,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0009\",\"title\":\"Cycle of Hatred\",\"pl\":\"Krąg Nienawiści\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Cycle of Hatred · Krąg Nienawiści · Keith R. A. DeCandido\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-gb/news/9979107/the-library-cycle-of-hatred\",\"pdfYear\":2006,\"catalogOrder\":8,\"scanEligible\":true},{\"id\":\"w0008\",\"title\":\"Rise of the Horde\",\"pl\":\"Narodziny Hordy\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Rise of the Horde · Narodziny Hordy · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-narodziny-hordy/\",\"pdfYear\":2006,\"catalogOrder\":9,\"scanEligible\":true,\"omnibusTitles\":[\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\"]},{\"id\":\"w0010\",\"title\":\"Tides of Darkness\",\"pl\":\"Fale ciemności\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Tides of Darkness · Fale ciemności · Aaron Rosenberg\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2007,\"catalogOrder\":10,\"scanEligible\":true},{\"id\":\"w0011\",\"title\":\"Beyond the Dark Portal\",\"pl\":\"Przez Mroczny Portal\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Beyond the Dark Portal · Przez Mroczny Portal · Aaron Rosenberg · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2008,\"catalogOrder\":11,\"scanEligible\":true},{\"id\":\"w0012\",\"title\":\"Night of the Dragon\",\"pl\":\"Noc smoka\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Night of the Dragon · Noc smoka · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-noc-smoka/\",\"pdfYear\":2008,\"catalogOrder\":12,\"scanEligible\":true},{\"id\":\"w0013\",\"title\":\"Arthas: Rise of the Lich King\",\"pl\":\"Arthas: Przebudzenie Króla Lisza\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Arthas: Rise of the Lich King · Arthas: Przebudzenie Króla Lisza · Christie Golden\",\"uncertain\":false,\"note\":\"Pełny tytuł i autor odróżniają powieść od innych publikacji o Arthasie.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2009,\"catalogOrder\":13,\"scanEligible\":true},{\"id\":\"w0014\",\"title\":\"Stormrage\",\"pl\":\"Malfurion\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Stormrage · Malfurion · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-malfurion/\",\"pdfYear\":2010,\"catalogOrder\":14,\"scanEligible\":true},{\"id\":\"w0015\",\"title\":\"The Shattering: Prelude to Cataclysm\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"The Shattering: Prelude to Cataclysm ·  · Christie Golden\",\"uncertain\":false,\"note\":\"W katalogu EN. Nie jest to Rozbicie Richarda A. Knaaka.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2010,\"catalogOrder\":15,\"scanEligible\":true},{\"id\":\"w0017\",\"title\":\"Thrall: Twilight of the Aspects\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Thrall: Twilight of the Aspects ·  · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2011,\"catalogOrder\":16,\"scanEligible\":true},{\"id\":\"w0016\",\"title\":\"Wolfheart\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Wolfheart ·  · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2011,\"catalogOrder\":17,\"scanEligible\":true},{\"id\":\"w0018\",\"title\":\"Jaina Proudmoore: Tides of War\",\"pl\":\"Jaina Proudmoore: Wichry wojny\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Jaina Proudmoore: Tides of War · Jaina Proudmoore: Wichry wojny · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-jaina-proudmoore-wichry-wojny/\",\"pdfYear\":2012,\"catalogOrder\":18,\"scanEligible\":true},{\"id\":\"w0021\",\"title\":\"Dawn of the Aspects\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Dawn of the Aspects ·  · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Pełna powieść; pięć części cyfrowych nie jest pięcioma papierowymi tomami.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2013,\"catalogOrder\":19,\"scanEligible\":true},{\"id\":\"w0019\",\"title\":\"Vol’jin: Shadows of the Horde\",\"pl\":\"Vol’jin: Cienie Hordy\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Vol’jin: Shadows of the Horde · Vol’jin: Cienie Hordy · Michael A. Stackpole\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2013,\"catalogOrder\":20,\"scanEligible\":true},{\"id\":\"w0020\",\"title\":\"War Crimes\",\"pl\":\"Zbrodnie wojenne\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"War Crimes · Zbrodnie wojenne · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-zbrodnie-wojenne/\",\"pdfYear\":2014,\"catalogOrder\":21,\"scanEligible\":true},{\"id\":\"w0022\",\"title\":\"Illidan\",\"pl\":\"Illidan\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Illidan · Illidan · William King\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2016,\"catalogOrder\":22,\"scanEligible\":true},{\"id\":\"w0023\",\"title\":\"Before the Storm\",\"pl\":\"Cisza przed burzą\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Before the Storm · Cisza przed burzą · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2018,\"catalogOrder\":23,\"scanEligible\":true},{\"id\":\"w0024\",\"title\":\"Shadows Rising\",\"pl\":\"Przebudzenie cienia\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Shadows Rising · Przebudzenie cienia · Madeleine Roux\",\"uncertain\":false,\"note\":\"W PDF: Przebudzenie Cieni. Oficjalny polski tytuł wydania Insignis: Przebudzenie cienia.\",\"kind\":\"powieść\",\"source\":\"https://sklep.insignis.pl/world-of-warcraft/175-world-of-warcraft-przebudzenie-cienia-9788366575158.html\",\"pdfYear\":2020,\"catalogOrder\":24,\"scanEligible\":true},{\"id\":\"w0025\",\"title\":\"Sylvanas\",\"pl\":\"Sylwana\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Sylvanas · Sylwana · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-sylwana/\",\"pdfYear\":2022,\"catalogOrder\":25,\"scanEligible\":true},{\"id\":\"w0026\",\"title\":\"War of the Scaleborn\",\"pl\":\"Smocza wojna\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"War of the Scaleborn · Smocza wojna · Courtney Alameda\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-smocza-wojna/\",\"pdfYear\":2023,\"catalogOrder\":26,\"scanEligible\":true},{\"id\":\"w0027\",\"title\":\"Blood Ties\",\"pl\":\"Więzy krwi\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Blood Ties · Więzy krwi · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wiezy-krwi/\",\"pdfYear\":2025,\"catalogOrder\":27,\"scanEligible\":true},{\"id\":\"w0039\",\"title\":\"Traveler\",\"pl\":\"Traveler. Wędrowiec\",\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":1,\"raw\":\"Traveler · Traveler. Wędrowiec · Greg Weisman\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-traveler-wedrowiec/\",\"pdfYear\":2016,\"catalogOrder\":28,\"scanEligible\":true},{\"id\":\"w0040\",\"title\":\"Traveler: The Spiral Path\",\"pl\":null,\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":2,\"raw\":\"Traveler: The Spiral Path ·  · Greg Weisman\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2018,\"catalogOrder\":29,\"scanEligible\":true},{\"id\":\"w0041\",\"title\":\"Traveler: The Shining Blade\",\"pl\":null,\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":3,\"raw\":\"Traveler: The Shining Blade ·  · Madeleine Roux\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2019,\"catalogOrder\":30,\"scanEligible\":true},{\"id\":\"w0030\",\"title\":\"Chronicle Volume 1\",\"pl\":\"Kronika. Tom 1\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":1,\"raw\":\"Chronicle Volume 1 · Kronika. Tom 1 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom/\",\"pdfYear\":2016,\"catalogOrder\":31,\"scanEligible\":true},{\"id\":\"w0031\",\"title\":\"Chronicle Volume 2\",\"pl\":\"Kronika. Tom 2\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":2,\"raw\":\"Chronicle Volume 2 · Kronika. Tom 2 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom-ii/\",\"pdfYear\":2017,\"catalogOrder\":32,\"scanEligible\":true},{\"id\":\"w0032\",\"title\":\"Chronicle Volume 3\",\"pl\":\"Kronika. Tom 3\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":3,\"raw\":\"Chronicle Volume 3 · Kronika. Tom 3 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom-iii/\",\"pdfYear\":2018,\"catalogOrder\":33,\"scanEligible\":true},{\"id\":\"w0033\",\"title\":\"Chronicle Volume 4\",\"pl\":null,\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":4,\"raw\":\"Chronicle Volume 4 ·  · Matt Forbeck · Marty Forbeck\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.penguinrandomhouse.com/books/739185/world-of-warcraft-chronicle-volume-4-by-written-by-matt-forbeck-written-by-marty-forbeck/\",\"pdfYear\":2024,\"catalogOrder\":34,\"scanEligible\":true},{\"id\":\"w0034\",\"title\":\"Exploring Azeroth: The Eastern Kingdoms\",\"pl\":\"Podróż przez Azeroth. Wschodnie Królestwa\",\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":1,\"raw\":\"Exploring Azeroth: The Eastern Kingdoms · Podróż przez Azeroth. Wschodnie Królestwa · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70437-world-of-warcraft-exploring-azeroth-the-eastern-kingdoms/\",\"pdfYear\":2020,\"catalogOrder\":35,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0035\",\"title\":\"Exploring Azeroth: Kalimdor\",\"pl\":\"Podróż przez Azeroth. Kalimdor\",\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":2,\"raw\":\"Exploring Azeroth: Kalimdor · Podróż przez Azeroth. Kalimdor · Sean Copeland\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70821-world-of-warcraft-exploring-azeroth-kalimdor/\",\"pdfYear\":2021,\"catalogOrder\":36,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0036\",\"title\":\"Exploring Azeroth: Northrend\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":3,\"raw\":\"Exploring Azeroth: Northrend ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71100-world-of-warcraft-exploring-azeroth-northrend/\",\"pdfYear\":2022,\"catalogOrder\":37,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0037\",\"title\":\"Exploring Azeroth: Pandaria\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":4,\"raw\":\"Exploring Azeroth: Pandaria ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71626-world-of-warcraft-exploring-azeroth-pandaria/\",\"pdfYear\":2023,\"catalogOrder\":38,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0038\",\"title\":\"Exploring Azeroth: Islands and Isles\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":5,\"raw\":\"Exploring Azeroth: Islands and Isles ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71937-world-of-warcraft-exploring-azeroth-islands-and-isles/\",\"pdfYear\":2024,\"catalogOrder\":39,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0049\",\"title\":\"Folk & Fairy Tales of Azeroth\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"Folk & Fairy Tales of Azeroth ·  · Christie Golden · Garth Nix · Catherynne M. Valente · Kami Garcia\",\"uncertain\":false,\"note\":\"\",\"kind\":\"antologia\",\"source\":\"https://www.simonandschuster.com.au/books/World-of-Warcraft-Folk-Fairy-Tales-of-Azeroth/Christie-Golden/9781789097306\",\"pdfYear\":2021,\"catalogOrder\":40,\"scanEligible\":true},{\"id\":\"w0042\",\"title\":\"The Voices Within\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"The Voices Within ·  · Courtney Alameda · Delilah S. Dawson · Christie Golden · Jonathan Maberry · Andrew Robinson · Catherynne M. Valente\",\"uncertain\":false,\"note\":\"\",\"kind\":\"antologia\",\"source\":\"https://titanbooks.com/72512-world-of-warcraft-the-voices-within-short-story-collection/\",\"pdfYear\":2024,\"catalogOrder\":41,\"scanEligible\":true},{\"id\":\"w0043\",\"title\":\"Crossroads: The War Within Anthology\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"Crossroads: The War Within Anthology ·  · Adam Christopher · L.L. McKinney · Andrew Robinson\",\"uncertain\":false,\"note\":\"W PDF podano 2025; wskazane wydanie twardookładkowe Titan Books ma datę 28.04.2026. Rok na liście odtwarzamy według PDF.\",\"kind\":\"antologia\",\"source\":\"https://www.simonandschuster.com.au/books/World-of-Warcraft-Crossroads-The-War-Within-Anthology/Adam-Christopher/9781835416914\",\"pdfYear\":2025,\"catalogOrder\":42,\"scanEligible\":true},{\"id\":\"w0050\",\"title\":\"Grimoire of the Shadowlands and Beyond\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"Grimoire of the Shadowlands and Beyond ·  · Sean Copeland · Steve Danuser\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70652-world-of-warcraft-grimoire-of-the-shadowlands-and-beyond/\",\"pdfYear\":2021,\"catalogOrder\":43,\"scanEligible\":true},{\"id\":\"w0051\",\"title\":\"The Dragonflight Codex\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"The Dragonflight Codex ·  · Sandra Rosner · Doug Walsh\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://www.simonandschuster.com/books/World-of-Warcraft-The-Dragonflight-Codex/Sandra-Rosner/WORLD-OF-WARCRAFT/9781647221584\",\"pdfYear\":2023,\"catalogOrder\":44,\"scanEligible\":true},{\"id\":\"w0052\",\"title\":\"The Official Cookbook\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"The Official Cookbook ·  · Chelsea Monroe-Cassel\",\"uncertain\":false,\"note\":\"\",\"kind\":\"książka kucharska\",\"source\":\"/catalog-source.pdf\",\"pdfYear\":2016,\"catalogOrder\":45,\"scanEligible\":true},{\"id\":\"w0053\",\"title\":\"New Flavors of Azeroth\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"New Flavors of Azeroth ·  · Chelsea Monroe-Cassel\",\"uncertain\":false,\"note\":\"\",\"kind\":\"książka kucharska\",\"source\":\"https://titanbooks.com/70615-world-of-warcraft-new-flavors-of-azeroth-the-official-cookbook/\",\"pdfYear\":2021,\"catalogOrder\":46,\"scanEligible\":true},{\"id\":\"w0047\",\"title\":\"World of Warcraft Pop-Up Book\",\"pl\":\"Wielka księga pop-up\",\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"World of Warcraft Pop-Up Book · Wielka księga pop-up · Robert Brooks · Matthew Reinhart\",\"uncertain\":false,\"note\":\"\",\"kind\":\"album\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wielka-ksiega-pop-up/\",\"pdfYear\":2019,\"catalogOrder\":47,\"scanEligible\":true},{\"id\":\"w0044\",\"title\":\"Durotan\",\"pl\":\"Durotan. Oficjalny prequel filmu\",\"series\":\"07 · Powieści powiązane z filmem Warcraft\",\"number\":null,\"raw\":\"Durotan · Durotan. Oficjalny prequel filmu · Christie Golden\",\"uncertain\":false,\"note\":\"Prequel filmu; osobna ciągłość fabularna względem gier.\",\"kind\":\"powieść filmowa\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2016,\"catalogOrder\":48,\"scanEligible\":true},{\"id\":\"w0045\",\"title\":\"Warcraft: The Official Movie Novelization\",\"pl\":\"Warcraft: Początek. Oficjalna powieść filmu\",\"series\":\"07 · Powieści powiązane z filmem Warcraft\",\"number\":null,\"raw\":\"Warcraft: The Official Movie Novelization · Warcraft: Początek. Oficjalna powieść filmu · Christie Golden\",\"uncertain\":false,\"note\":\"Powieść towarzysząca filmowi; osobna ciągłość fabularna względem gier.\",\"kind\":\"powieść filmowa\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2016,\"catalogOrder\":49,\"scanEligible\":true},{\"id\":\"w0029\",\"title\":\"Warcraft Archive\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Warcraft Archive ·  · Richard A. Knaak · Christie Golden · Jeff Grubb · Chris Metzen\",\"uncertain\":false,\"note\":\"Drukowane wydanie zawiera także Of Blood and Honor; nowela nie jest osobną fizyczną pozycją kolekcji.\",\"kind\":\"omnibus\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"contents\":[\"Day of the Dragon\",\"Lord of the Clans\",\"The Last Guardian\",\"Of Blood and Honor\"],\"pdfYear\":2006,\"catalogOrder\":50,\"scanEligible\":true},{\"id\":\"w0028\",\"title\":\"War of the Ancients Archive\",\"pl\":\"Wojna Starożytnych. Trylogia\",\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"War of the Ancients Archive · Wojna Starożytnych. Trylogia · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Wydanie zbiorcze trzech powieści, osobny rekord kolekcji.\",\"kind\":\"omnibus\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"contents\":[\"The Well of Eternity\",\"The Demon Soul\",\"The Sundering\"],\"pdfYear\":2007,\"catalogOrder\":51,\"scanEligible\":true},{\"id\":\"w0054\",\"title\":\"Warcraft: Chronicles of War\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Warcraft: Chronicles of War ·  · Christie Golden · Jeff Grubb · Aaron Rosenberg\",\"uncertain\":false,\"note\":\"Wydanie zbiorcze wcześniejszych powieści; nie jest nową odrębną historią.\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"pdfYear\":2010,\"catalogOrder\":52,\"scanEligible\":true},{\"id\":\"w0055\",\"title\":\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Rise of the Horde & Lord of the Clans: The Illustrated Novels ·  · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"contents\":[\"Rise of the Horde\",\"Lord of the Clans\"],\"pdfYear\":2020,\"catalogOrder\":53,\"scanEligible\":true},{\"id\":\"w0056\",\"title\":\"Exploring Azeroth: The Complete Collection\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Exploring Azeroth: The Complete Collection ·  · Christie Golden · Sean Copeland · Alex Acks\",\"uncertain\":false,\"note\":\"Zestaw pięciu przewodników. Status zestawu jest osobny od statusów tomów.\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"contents\":[\"Exploring Azeroth: The Eastern Kingdoms\",\"Exploring Azeroth: Kalimdor\",\"Exploring Azeroth: Northrend\",\"Exploring Azeroth: Pandaria\",\"Exploring Azeroth: Islands and Isles\"],\"pdfYear\":2024,\"catalogOrder\":54,\"scanEligible\":true},{\"id\":\"w0063\",\"title\":\"Elegy & A Good War\",\"pl\":\"Elegia i Słuszna wojna\",\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Elegy & A Good War · Elegia i Słuszna wojna · Christie Golden · Robert Brooks\",\"uncertain\":false,\"note\":\"Jeden wspólny tom twardookładkowy z edycji kolekcjonerskiej Battle for Azeroth. Dwie nowele, jedna fizyczna książka.\",\"kind\":\"omnibus\",\"source\":\"https://investor.activision.com/node/31331/pdf\",\"contents\":[\"Elegy\",\"A Good War\"],\"pdfYear\":2018,\"catalogOrder\":61,\"scanEligible\":true}]");
+//#endregion
 //#region lib/catalog.ts
-var catalog = /* @__PURE__ */ JSON.parse("[{\"id\":\"w0001\",\"title\":\"Day of the Dragon\",\"pl\":\"Dzień smoka\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Day of the Dragon · Dzień smoka · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-dzien-smoka/\",\"pdfYear\":2001,\"catalogOrder\":2,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\"]},{\"id\":\"w0002\",\"title\":\"Lord of the Clans\",\"pl\":\"Władca klanów\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Lord of the Clans · Władca klanów · Christie Golden\",\"uncertain\":false,\"note\":\"Polskie wydanie ISA. Wznowienie lub dostępność należy sprawdzić w ofercie.\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2001,\"catalogOrder\":3,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\",\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\"]},{\"id\":\"w0003\",\"title\":\"The Last Guardian\",\"pl\":\"Ostatni Strażnik\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"The Last Guardian · Ostatni Strażnik · Jeff Grubb\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-ostatni-straznik/\",\"pdfYear\":2001,\"catalogOrder\":4,\"scanEligible\":true,\"omnibusTitles\":[\"Warcraft Archive\"]},{\"id\":\"w0005\",\"title\":\"The Well of Eternity\",\"pl\":\"Studnia Wieczności\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":1,\"raw\":\"The Well of Eternity · Studnia Wieczności · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2004,\"catalogOrder\":5,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0006\",\"title\":\"The Demon Soul\",\"pl\":\"Demoniczna Dusza / Dusza Demona\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":2,\"raw\":\"The Demon Soul · Dusza Demona · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Starsze wydanie: Dusza Demona; w wydaniu zbiorczym: Demoniczna Dusza.\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2004,\"catalogOrder\":6,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0007\",\"title\":\"The Sundering\",\"pl\":\"Rozbicie\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":3,\"raw\":\"The Sundering · Rozbicie · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Trzeci tom Wojny Starożytnych. Nie mylić z The Shattering Christie Golden.\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"pdfYear\":2005,\"catalogOrder\":7,\"scanEligible\":true,\"omnibusTitles\":[\"War of the Ancients Archive\"]},{\"id\":\"w0009\",\"title\":\"Cycle of Hatred\",\"pl\":\"Krąg Nienawiści\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Cycle of Hatred · Krąg Nienawiści · Keith R. A. DeCandido\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-gb/news/9979107/the-library-cycle-of-hatred\",\"pdfYear\":2006,\"catalogOrder\":8,\"scanEligible\":true},{\"id\":\"w0008\",\"title\":\"Rise of the Horde\",\"pl\":\"Narodziny Hordy\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Rise of the Horde · Narodziny Hordy · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-narodziny-hordy/\",\"pdfYear\":2006,\"catalogOrder\":9,\"scanEligible\":true,\"omnibusTitles\":[\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\"]},{\"id\":\"w0010\",\"title\":\"Tides of Darkness\",\"pl\":\"Fale ciemności\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Tides of Darkness · Fale ciemności · Aaron Rosenberg\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2007,\"catalogOrder\":10,\"scanEligible\":true},{\"id\":\"w0011\",\"title\":\"Beyond the Dark Portal\",\"pl\":\"Przez Mroczny Portal\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Beyond the Dark Portal · Przez Mroczny Portal · Aaron Rosenberg · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2008,\"catalogOrder\":11,\"scanEligible\":true},{\"id\":\"w0012\",\"title\":\"Night of the Dragon\",\"pl\":\"Noc smoka\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Night of the Dragon · Noc smoka · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-noc-smoka/\",\"pdfYear\":2008,\"catalogOrder\":12,\"scanEligible\":true},{\"id\":\"w0013\",\"title\":\"Arthas: Rise of the Lich King\",\"pl\":\"Arthas: Przebudzenie Króla Lisza\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Arthas: Rise of the Lich King · Arthas: Przebudzenie Króla Lisza · Christie Golden\",\"uncertain\":false,\"note\":\"Pełny tytuł i autor odróżniają powieść od innych publikacji o Arthasie.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2009,\"catalogOrder\":13,\"scanEligible\":true},{\"id\":\"w0014\",\"title\":\"Stormrage\",\"pl\":\"Malfurion\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Stormrage · Malfurion · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-malfurion/\",\"pdfYear\":2010,\"catalogOrder\":14,\"scanEligible\":true},{\"id\":\"w0015\",\"title\":\"The Shattering: Prelude to Cataclysm\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"The Shattering: Prelude to Cataclysm ·  · Christie Golden\",\"uncertain\":false,\"note\":\"W katalogu EN. Nie jest to Rozbicie Richarda A. Knaaka.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2010,\"catalogOrder\":15,\"scanEligible\":true},{\"id\":\"w0017\",\"title\":\"Thrall: Twilight of the Aspects\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Thrall: Twilight of the Aspects ·  · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2011,\"catalogOrder\":16,\"scanEligible\":true},{\"id\":\"w0016\",\"title\":\"Wolfheart\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Wolfheart ·  · Richard A. Knaak\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2011,\"catalogOrder\":17,\"scanEligible\":true},{\"id\":\"w0018\",\"title\":\"Jaina Proudmoore: Tides of War\",\"pl\":\"Jaina Proudmoore: Wichry wojny\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Jaina Proudmoore: Tides of War · Jaina Proudmoore: Wichry wojny · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-jaina-proudmoore-wichry-wojny/\",\"pdfYear\":2012,\"catalogOrder\":18,\"scanEligible\":true},{\"id\":\"w0021\",\"title\":\"Dawn of the Aspects\",\"pl\":null,\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Dawn of the Aspects ·  · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Pełna powieść; pięć części cyfrowych nie jest pięcioma papierowymi tomami.\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2013,\"catalogOrder\":19,\"scanEligible\":true},{\"id\":\"w0019\",\"title\":\"Vol’jin: Shadows of the Horde\",\"pl\":\"Vol’jin: Cienie Hordy\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Vol’jin: Shadows of the Horde · Vol’jin: Cienie Hordy · Michael A. Stackpole\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2013,\"catalogOrder\":20,\"scanEligible\":true},{\"id\":\"w0020\",\"title\":\"War Crimes\",\"pl\":\"Zbrodnie wojenne\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"War Crimes · Zbrodnie wojenne · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-zbrodnie-wojenne/\",\"pdfYear\":2014,\"catalogOrder\":21,\"scanEligible\":true},{\"id\":\"w0022\",\"title\":\"Illidan\",\"pl\":\"Illidan\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Illidan · Illidan · William King\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2016,\"catalogOrder\":22,\"scanEligible\":true},{\"id\":\"w0023\",\"title\":\"Before the Storm\",\"pl\":\"Cisza przed burzą\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Before the Storm · Cisza przed burzą · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2018,\"catalogOrder\":23,\"scanEligible\":true},{\"id\":\"w0024\",\"title\":\"Shadows Rising\",\"pl\":\"Przebudzenie cienia\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Shadows Rising · Przebudzenie cienia · Madeleine Roux\",\"uncertain\":false,\"note\":\"W PDF: Przebudzenie Cieni. Oficjalny polski tytuł wydania Insignis: Przebudzenie cienia.\",\"kind\":\"powieść\",\"source\":\"https://sklep.insignis.pl/world-of-warcraft/175-world-of-warcraft-przebudzenie-cienia-9788366575158.html\",\"pdfYear\":2020,\"catalogOrder\":24,\"scanEligible\":true},{\"id\":\"w0025\",\"title\":\"Sylvanas\",\"pl\":\"Sylwana\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Sylvanas · Sylwana · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-sylwana/\",\"pdfYear\":2022,\"catalogOrder\":25,\"scanEligible\":true},{\"id\":\"w0026\",\"title\":\"War of the Scaleborn\",\"pl\":\"Smocza wojna\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"War of the Scaleborn · Smocza wojna · Courtney Alameda\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-smocza-wojna/\",\"pdfYear\":2023,\"catalogOrder\":26,\"scanEligible\":true},{\"id\":\"w0027\",\"title\":\"Blood Ties\",\"pl\":\"Więzy krwi\",\"series\":\"01 · Główne powieści i dłuższe utwory\",\"number\":null,\"raw\":\"Blood Ties · Więzy krwi · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wiezy-krwi/\",\"pdfYear\":2025,\"catalogOrder\":27,\"scanEligible\":true},{\"id\":\"w0039\",\"title\":\"Traveler\",\"pl\":\"Traveler. Wędrowiec\",\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":1,\"raw\":\"Traveler · Traveler. Wędrowiec · Greg Weisman\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-traveler-wedrowiec/\",\"pdfYear\":2016,\"catalogOrder\":28,\"scanEligible\":true},{\"id\":\"w0040\",\"title\":\"Traveler: The Spiral Path\",\"pl\":null,\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":2,\"raw\":\"Traveler: The Spiral Path ·  · Greg Weisman\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2018,\"catalogOrder\":29,\"scanEligible\":true},{\"id\":\"w0041\",\"title\":\"Traveler: The Shining Blade\",\"pl\":null,\"series\":\"02 · Traveler — trylogia przygodowa\",\"number\":3,\"raw\":\"Traveler: The Shining Blade ·  · Madeleine Roux\",\"uncertain\":false,\"note\":\"\",\"kind\":\"powieść młodzieżowa\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"pdfYear\":2019,\"catalogOrder\":30,\"scanEligible\":true},{\"id\":\"w0030\",\"title\":\"Chronicle Volume 1\",\"pl\":\"Kronika. Tom 1\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":1,\"raw\":\"Chronicle Volume 1 · Kronika. Tom 1 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom/\",\"pdfYear\":2016,\"catalogOrder\":31,\"scanEligible\":true},{\"id\":\"w0031\",\"title\":\"Chronicle Volume 2\",\"pl\":\"Kronika. Tom 2\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":2,\"raw\":\"Chronicle Volume 2 · Kronika. Tom 2 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom-ii/\",\"pdfYear\":2017,\"catalogOrder\":32,\"scanEligible\":true},{\"id\":\"w0032\",\"title\":\"Chronicle Volume 3\",\"pl\":\"Kronika. Tom 3\",\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":3,\"raw\":\"Chronicle Volume 3 · Kronika. Tom 3 · Chris Metzen · Matt Burns · Robert Brooks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-kronika-tom-iii/\",\"pdfYear\":2018,\"catalogOrder\":33,\"scanEligible\":true},{\"id\":\"w0033\",\"title\":\"Chronicle Volume 4\",\"pl\":null,\"series\":\"03 · World of Warcraft: Kroniki\",\"number\":4,\"raw\":\"Chronicle Volume 4 ·  · Matt Forbeck · Marty Forbeck\",\"uncertain\":false,\"note\":\"\",\"kind\":\"kronika\",\"source\":\"https://www.penguinrandomhouse.com/books/739185/world-of-warcraft-chronicle-volume-4-by-written-by-matt-forbeck-written-by-marty-forbeck/\",\"pdfYear\":2024,\"catalogOrder\":34,\"scanEligible\":true},{\"id\":\"w0034\",\"title\":\"Exploring Azeroth: The Eastern Kingdoms\",\"pl\":\"Podróż przez Azeroth. Wschodnie Królestwa\",\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":1,\"raw\":\"Exploring Azeroth: The Eastern Kingdoms · Podróż przez Azeroth. Wschodnie Królestwa · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70437-world-of-warcraft-exploring-azeroth-the-eastern-kingdoms/\",\"pdfYear\":2020,\"catalogOrder\":35,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0035\",\"title\":\"Exploring Azeroth: Kalimdor\",\"pl\":\"Podróż przez Azeroth. Kalimdor\",\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":2,\"raw\":\"Exploring Azeroth: Kalimdor · Podróż przez Azeroth. Kalimdor · Sean Copeland\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70821-world-of-warcraft-exploring-azeroth-kalimdor/\",\"pdfYear\":2021,\"catalogOrder\":36,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0036\",\"title\":\"Exploring Azeroth: Northrend\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":3,\"raw\":\"Exploring Azeroth: Northrend ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71100-world-of-warcraft-exploring-azeroth-northrend/\",\"pdfYear\":2022,\"catalogOrder\":37,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0037\",\"title\":\"Exploring Azeroth: Pandaria\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":4,\"raw\":\"Exploring Azeroth: Pandaria ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71626-world-of-warcraft-exploring-azeroth-pandaria/\",\"pdfYear\":2023,\"catalogOrder\":38,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0038\",\"title\":\"Exploring Azeroth: Islands and Isles\",\"pl\":null,\"series\":\"04 · Exploring Azeroth / Podróż przez Azeroth\",\"number\":5,\"raw\":\"Exploring Azeroth: Islands and Isles ·  · Alex Acks\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/71937-world-of-warcraft-exploring-azeroth-islands-and-isles/\",\"pdfYear\":2024,\"catalogOrder\":39,\"scanEligible\":true,\"omnibusTitles\":[\"Exploring Azeroth: The Complete Collection\"]},{\"id\":\"w0049\",\"title\":\"Folk & Fairy Tales of Azeroth\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"Folk & Fairy Tales of Azeroth ·  · Christie Golden · Garth Nix · Catherynne M. Valente · Kami Garcia\",\"uncertain\":false,\"note\":\"\",\"kind\":\"antologia\",\"source\":\"https://www.simonandschuster.com.au/books/World-of-Warcraft-Folk-Fairy-Tales-of-Azeroth/Christie-Golden/9781789097306\",\"pdfYear\":2021,\"catalogOrder\":40,\"scanEligible\":true},{\"id\":\"w0042\",\"title\":\"The Voices Within\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"The Voices Within ·  · Courtney Alameda · Delilah S. Dawson · Christie Golden · Jonathan Maberry · Andrew Robinson · Catherynne M. Valente\",\"uncertain\":false,\"note\":\"\",\"kind\":\"antologia\",\"source\":\"https://titanbooks.com/72512-world-of-warcraft-the-voices-within-short-story-collection/\",\"pdfYear\":2024,\"catalogOrder\":41,\"scanEligible\":true},{\"id\":\"w0043\",\"title\":\"Crossroads: The War Within Anthology\",\"pl\":null,\"series\":\"05 · Antologie opowiadań w wydaniach książkowych\",\"number\":null,\"raw\":\"Crossroads: The War Within Anthology ·  · Adam Christopher · L.L. McKinney · Andrew Robinson\",\"uncertain\":false,\"note\":\"W PDF podano 2025; wskazane wydanie twardookładkowe Titan Books ma datę 28.04.2026. Rok na liście odtwarzamy według PDF.\",\"kind\":\"antologia\",\"source\":\"https://www.simonandschuster.com.au/books/World-of-Warcraft-Crossroads-The-War-Within-Anthology/Adam-Christopher/9781835416914\",\"pdfYear\":2025,\"catalogOrder\":42,\"scanEligible\":true},{\"id\":\"w0050\",\"title\":\"Grimoire of the Shadowlands and Beyond\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"Grimoire of the Shadowlands and Beyond ·  · Sean Copeland · Steve Danuser\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://titanbooks.com/70652-world-of-warcraft-grimoire-of-the-shadowlands-and-beyond/\",\"pdfYear\":2021,\"catalogOrder\":43,\"scanEligible\":true},{\"id\":\"w0051\",\"title\":\"The Dragonflight Codex\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"The Dragonflight Codex ·  · Sandra Rosner · Doug Walsh\",\"uncertain\":false,\"note\":\"\",\"kind\":\"przewodnik\",\"source\":\"https://www.simonandschuster.com/books/World-of-Warcraft-The-Dragonflight-Codex/Sandra-Rosner/WORLD-OF-WARCRAFT/9781647221584\",\"pdfYear\":2023,\"catalogOrder\":44,\"scanEligible\":true},{\"id\":\"w0052\",\"title\":\"The Official Cookbook\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"The Official Cookbook ·  · Chelsea Monroe-Cassel\",\"uncertain\":false,\"note\":\"\",\"kind\":\"książka kucharska\",\"source\":\"/catalog-source.pdf\",\"pdfYear\":2016,\"catalogOrder\":45,\"scanEligible\":true},{\"id\":\"w0053\",\"title\":\"New Flavors of Azeroth\",\"pl\":null,\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"New Flavors of Azeroth ·  · Chelsea Monroe-Cassel\",\"uncertain\":false,\"note\":\"\",\"kind\":\"książka kucharska\",\"source\":\"https://titanbooks.com/70615-world-of-warcraft-new-flavors-of-azeroth-the-official-cookbook/\",\"pdfYear\":2021,\"catalogOrder\":46,\"scanEligible\":true},{\"id\":\"w0047\",\"title\":\"World of Warcraft Pop-Up Book\",\"pl\":\"Wielka księga pop-up\",\"series\":\"06 · Przewodniki, książki ilustrowane i kucharskie\",\"number\":null,\"raw\":\"World of Warcraft Pop-Up Book · Wielka księga pop-up · Robert Brooks · Matthew Reinhart\",\"uncertain\":false,\"note\":\"\",\"kind\":\"album\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wielka-ksiega-pop-up/\",\"pdfYear\":2019,\"catalogOrder\":47,\"scanEligible\":true},{\"id\":\"w0044\",\"title\":\"Durotan\",\"pl\":\"Durotan. Oficjalny prequel filmu\",\"series\":\"07 · Powieści powiązane z filmem Warcraft\",\"number\":null,\"raw\":\"Durotan · Durotan. Oficjalny prequel filmu · Christie Golden\",\"uncertain\":false,\"note\":\"Prequel filmu; osobna ciągłość fabularna względem gier.\",\"kind\":\"powieść filmowa\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2016,\"catalogOrder\":48,\"scanEligible\":true},{\"id\":\"w0045\",\"title\":\"Warcraft: The Official Movie Novelization\",\"pl\":\"Warcraft: Początek. Oficjalna powieść filmu\",\"series\":\"07 · Powieści powiązane z filmem Warcraft\",\"number\":null,\"raw\":\"Warcraft: The Official Movie Novelization · Warcraft: Początek. Oficjalna powieść filmu · Christie Golden\",\"uncertain\":false,\"note\":\"Powieść towarzysząca filmowi; osobna ciągłość fabularna względem gier.\",\"kind\":\"powieść filmowa\",\"source\":\"https://warcraftbooks.pl/polskie-wydania-ksiazek-warcrafta/\",\"pdfYear\":2016,\"catalogOrder\":49,\"scanEligible\":true},{\"id\":\"w0029\",\"title\":\"Warcraft Archive\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Warcraft Archive ·  · Richard A. Knaak · Christie Golden · Jeff Grubb · Chris Metzen\",\"uncertain\":false,\"note\":\"Drukowane wydanie zawiera także Of Blood and Honor; nowela nie jest osobną fizyczną pozycją kolekcji.\",\"kind\":\"omnibus\",\"source\":\"https://worldofwarcraft.blizzard.com/en-us/media\",\"contents\":[\"Day of the Dragon\",\"Lord of the Clans\",\"The Last Guardian\",\"Of Blood and Honor\"],\"pdfYear\":2006,\"catalogOrder\":50,\"scanEligible\":true},{\"id\":\"w0028\",\"title\":\"War of the Ancients Archive\",\"pl\":\"Wojna Starożytnych. Trylogia\",\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"War of the Ancients Archive · Wojna Starożytnych. Trylogia · Richard A. Knaak\",\"uncertain\":false,\"note\":\"Wydanie zbiorcze trzech powieści, osobny rekord kolekcji.\",\"kind\":\"omnibus\",\"source\":\"https://www.insignis.pl/ksiazki/world-of-warcraft-wojna-starozytnych-trylogia/\",\"contents\":[\"The Well of Eternity\",\"The Demon Soul\",\"The Sundering\"],\"pdfYear\":2007,\"catalogOrder\":51,\"scanEligible\":true},{\"id\":\"w0054\",\"title\":\"Warcraft: Chronicles of War\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Warcraft: Chronicles of War ·  · Christie Golden · Jeff Grubb · Aaron Rosenberg\",\"uncertain\":false,\"note\":\"Wydanie zbiorcze wcześniejszych powieści; nie jest nową odrębną historią.\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"pdfYear\":2010,\"catalogOrder\":52,\"scanEligible\":true},{\"id\":\"w0055\",\"title\":\"Rise of the Horde & Lord of the Clans: The Illustrated Novels\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Rise of the Horde & Lord of the Clans: The Illustrated Novels ·  · Christie Golden\",\"uncertain\":false,\"note\":\"\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"contents\":[\"Rise of the Horde\",\"Lord of the Clans\"],\"pdfYear\":2020,\"catalogOrder\":53,\"scanEligible\":true},{\"id\":\"w0056\",\"title\":\"Exploring Azeroth: The Complete Collection\",\"pl\":null,\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Exploring Azeroth: The Complete Collection ·  · Christie Golden · Sean Copeland · Alex Acks\",\"uncertain\":false,\"note\":\"Zestaw pięciu przewodników. Status zestawu jest osobny od statusów tomów.\",\"kind\":\"omnibus\",\"source\":\"/catalog-source.pdf\",\"contents\":[\"Exploring Azeroth: The Eastern Kingdoms\",\"Exploring Azeroth: Kalimdor\",\"Exploring Azeroth: Northrend\",\"Exploring Azeroth: Pandaria\",\"Exploring Azeroth: Islands and Isles\"],\"pdfYear\":2024,\"catalogOrder\":54,\"scanEligible\":true},{\"id\":\"w0063\",\"title\":\"Elegy & A Good War\",\"pl\":\"Elegia i Słuszna wojna\",\"series\":\"08 · Wydania zbiorcze i kolekcjonerskie\",\"number\":null,\"raw\":\"Elegy & A Good War · Elegia i Słuszna wojna · Christie Golden · Robert Brooks\",\"uncertain\":false,\"note\":\"Jeden wspólny tom twardookładkowy z edycji kolekcjonerskiej Battle for Azeroth. Dwie nowele, jedna fizyczna książka.\",\"kind\":\"omnibus\",\"source\":\"https://investor.activision.com/node/31331/pdf\",\"contents\":[\"Elegy\",\"A Good War\"],\"pdfYear\":2018,\"catalogOrder\":61,\"scanEligible\":true}]");
+var excludedCatalog = books_default.filter((book) => book.catalogCurrent === false);
+var physicalScanIds = books_default.filter((book) => book.scanEligible !== false).map((book) => book.id);
+new Set(physicalScanIds);
+var catalog = books_default;
+var activeCatalog = catalog.filter((book) => book.catalogCurrent !== false);
+activeCatalog.length, books_default.length, physicalScanIds.length, excludedCatalog.length, activeCatalog.length - physicalScanIds.length;
 var norm = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l").replace(/[^a-z0-9]+/g, " ").trim();
 var vintedSearchUrl = (title) => "https://www.vinted.pl/catalog/2312-books?search_text=" + encodeURIComponent(title);
-var searchLinks = (b) => [
-	{
-		name: "OLX",
-		url: "https://www.olx.pl/muzyka-edukacja/ksiazki/q-" + encodeURIComponent(norm(b.pl || b.title).replace(/ /g, "-")) + "/"
-	},
-	{
-		name: "Allegro",
-		url: "https://allegro.pl/listing?string=" + encodeURIComponent((b.pl || b.title) + " książka")
-	},
-	{
-		name: "Vinted",
-		url: vintedSearchUrl(b.pl || b.title)
-	},
-	{
-		name: "Insignis",
-		url: "https://sklep.insignis.pl/szukaj?controller=search&s=" + encodeURIComponent(b.pl || b.title)
-	},
-	{
-		name: "Tantis · dział fantastyki",
-		url: "https://tantis.pl/fantasy-science-fiction-horror-c5074"
-	},
-	{
-		name: "Tantis · nowe",
-		url: "https://tantis.pl/szukaj?query=" + encodeURIComponent(b.pl || b.title)
-	},
-	{
-		name: "TaniaKsiazka · nowe",
-		url: "https://www.taniaksiazka.pl/Search?q=" + encodeURIComponent(b.pl || b.title)
-	},
-	{
-		name: "Blackwell’s · nowe EN",
-		url: "https://blackwells.co.uk/bookshop/search/?keyword=" + encodeURIComponent(b.title)
-	},
-	{
-		name: "Ceneo",
-		url: "https://www.ceneo.pl/;szukaj-" + encodeURIComponent(b.pl || b.title)
-	},
-	{
-		name: "Amazon PL",
-		url: "https://www.amazon.pl/s?k=" + encodeURIComponent(b.pl || b.title) + "&i=stripbooks"
-	},
-	{
-		name: "Empik · nowe",
-		url: "https://www.empik.com/szukaj/produkt?q=" + encodeURIComponent(b.pl || b.title)
-	},
-	{
-		name: "SkupSzop · wyszukiwarka",
-		url: "https://www.google.com/search?q=" + encodeURIComponent("site:skupszop.pl " + (b.pl || b.title) + " książka")
-	},
-	{
-		name: "ERLI · nowe",
-		url: "https://erli.pl/kategoria?phrase=" + encodeURIComponent(b.pl || b.title)
-	},
-	...additionalStores.flatMap((shop) => [{
-		name: shop.name + (shop.used ? " · antykwariat" : shop.mixed ? " · nowe i używane" : " · nowe"),
-		url: shop.search ? additionalSearchUrl(b, shop) : shop.url
-	}, ...(shop.extraUrls || []).map((url, i) => ({
-		name: shop.name + " · dział " + (i + 2),
-		url
-	}))]),
-	{
-		name: "World of Books",
-		url: "https://www.worldofbooks.com/en-gb/search?text=" + encodeURIComponent(b.title)
+var searchLinks = (book, language) => {
+	if (language === "PL" && !book.pl) return [];
+	const title = language === "EN" ? book.title : book.pl || book.title;
+	const b = language ? {
+		...book,
+		title,
+		pl: title
+	} : book;
+	return [
+		{
+			name: "Allegro",
+			url: "https://allegro.pl/listing?string=" + encodeURIComponent((b.pl || b.title) + " książka")
+		},
+		{
+			name: "Vinted",
+			url: vintedSearchUrl(b.pl || b.title)
+		},
+		{
+			name: "Tantis · dział fantastyki",
+			url: "https://tantis.pl/fantasy-science-fiction-horror-c5074"
+		},
+		{
+			name: "Tantis · nowe",
+			url: "https://tantis.pl/szukaj?query=" + encodeURIComponent(b.pl || b.title)
+		},
+		{
+			name: "TaniaKsiazka · nowe",
+			url: "https://www.taniaksiazka.pl/Search?q=" + encodeURIComponent(b.pl || b.title)
+		},
+		{
+			name: "Blackwell’s · nowe EN",
+			url: "https://blackwells.co.uk/bookshop/search/?keyword=" + encodeURIComponent(b.title)
+		},
+		{
+			name: "Ceneo",
+			url: "https://www.ceneo.pl/;szukaj-" + encodeURIComponent(b.pl || b.title)
+		},
+		{
+			name: "Amazon PL",
+			url: "https://www.amazon.pl/s?k=" + encodeURIComponent(b.pl || b.title) + "&i=stripbooks"
+		},
+		{
+			name: "Empik · nowe",
+			url: "https://www.empik.com/szukaj/produkt?q=" + encodeURIComponent(b.pl || b.title)
+		},
+		{
+			name: "SkupSzop · wyszukiwarka",
+			url: "https://www.google.com/search?q=" + encodeURIComponent("site:skupszop.pl " + (b.pl || b.title) + " książka")
+		},
+		{
+			name: "ERLI · nowe",
+			url: "https://erli.pl/kategoria?phrase=" + encodeURIComponent(b.pl || b.title)
+		},
+		...additionalStores.flatMap((shop) => [{
+			name: shop.name + (shop.used ? " · antykwariat" : shop.mixed ? " · nowe i używane" : " · nowe"),
+			url: shop.search ? additionalSearchUrl(b, shop) : shop.url
+		}, ...(shop.extraUrls || []).map((url, i) => ({
+			name: shop.name + " · dział " + (i + 2),
+			url
+		}))]),
+		{
+			name: "World of Books",
+			url: "https://www.worldofbooks.com/en-gb/search?text=" + encodeURIComponent(b.title)
+		}
+	].filter((link) => language === "PL" ? !/Blackwell|World of Books/.test(link.name) : language === "EN" ? link.name !== "Insignis" : true);
+};
+function scanTitles(book) {
+	return [...new Set((book.searchLanguage === "PL" ? [book.pl] : book.searchLanguage === "EN" ? [book.title] : [book.pl, book.title]).filter((title) => !!title?.trim()))];
+}
+function scanTitle(book, englishFirst = false) {
+	return book.searchLanguage === "EN" ? book.title : book.searchLanguage === "PL" ? book.pl || "" : englishFirst ? book.title : book.pl || book.title;
+}
+function scanSourceSupportsLanguage(source, language) {
+	return !(language === "EN" && source === "Insignis" || language === "PL" && /Blackwell|World of Books/.test(source));
+}
+function scanOfferInLanguage(offer, language) {
+	return language === "all" || offer.language === language || offer.language === "?";
+}
+//#endregion
+//#region lib/allegro-lokalnie.ts
+function parseAllegroListing(html, book, checked) {
+	const products = [];
+	let listing = false;
+	const visit = (node) => {
+		if (!node || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			node.forEach(visit);
+			return;
+		}
+		const types = Array.isArray(node["@type"]) ? node["@type"] : [node["@type"]];
+		if (types.includes("ItemList")) listing = true;
+		if (types.some((type) => ["Product", "Book"].includes(type))) products.push(node);
+		for (const key of [
+			"@graph",
+			"itemListElement",
+			"item"
+		]) visit(node[key]);
+	};
+	for (const script of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) try {
+		visit(JSON.parse(script[1]));
+	} catch {}
+	const empty = /class=["'][^"']*mlc-no-offers-to-show/.test(html);
+	if (!products.length && !listing && !empty) throw Error("Nie potwierdzono danych ofert w odpowiedzi źródła. Sprawdź wyszukiwanie ręcznie.");
+	const offers = [];
+	for (const product of products) for (const data of Array.isArray(product.offers) ? product.offers : [product.offers]) {
+		if (!data || data["@type"] === "AggregateOffer" || data.priceCurrency !== "PLN") continue;
+		let url;
+		try {
+			url = new URL(data.url || product.url);
+		} catch {
+			continue;
+		}
+		if (url.protocol !== "https:" || url.hostname !== "allegrolokalnie.pl" || url.port || url.username || url.password || !/^\/oferta\/[^/]+$/.test(url.pathname)) continue;
+		const condition = /UsedCondition/.test(data.itemCondition || product.itemCondition || "") ? "used" : /NewCondition/.test(data.itemCondition || product.itemCondition || "") ? "new" : "unknown";
+		const offer = baseOffer(book, clean(product.name || ""), url.href, "Allegro Lokalnie", Number(data.price), "PLN", condition, checked, true);
+		if (!offer) continue;
+		const availability = String(data.availability || "");
+		offer.available = /InStock|LimitedAvailability/.test(availability);
+		offer.availabilityKnown = /InStock|LimitedAvailability|OutOfStock|Discontinued|SoldOut/.test(availability);
+		offer.image = typeof product.image === "string" ? product.image : product.image?.url || null;
+		offers.push(offer);
 	}
-];
+	return [...new Map(offers.map((offer) => [offer.url, offer])).values()];
+}
+async function allegroOffers(book, checked, read) {
+	const queries = scanTitles(book);
+	const results = await Promise.all(queries.map(async (query) => {
+		try {
+			return { offers: parseAllegroListing(await read("https://allegrolokalnie.pl/oferty/q/" + encodeURIComponent(query)), book, checked) };
+		} catch (error) {
+			return {
+				offers: [],
+				error
+			};
+		}
+	}));
+	const failures = results.filter((r) => r.error);
+	if (failures.length === queries.length) throw failures[0].error;
+	return {
+		offers: [...new Map(results.flatMap((r) => r.offers).map((o) => [o.url, o])).values()],
+		partial: failures.length > 0,
+		coverage: `Sprawdzono ${queries.length - failures.length}/${queries.length} wyszukiwań tytułu ${book.searchLanguage || "PL/EN"}.`
+	};
+}
+//#endregion
+//#region lib/source-access.ts
+var manualSourceDetails = {
+	"Bonito": {
+		url: "https://bonito.pl/",
+		reason: "Polska księgarnia z katalogiem Herezji Horusa. Próba odczytu 17.10.2026 zakończyła się HTTP 429; aktualnych cen nie potwierdzono.",
+		alternative: "W szczegółach książki otwórz wyszukiwanie tytułu w Bonito. Sprawdź dostępność, wydanie i cenę, następnie dodaj konkretną ofertę ręcznie."
+	},
+	"Świat Książki": {
+		url: "https://www.swiatksiazki.pl/",
+		reason: "Polska księgarnia z książkami Warhammer 40K w języku polskim i angielskim. Podczas weryfikacji 17.10.2026 sprawdzany adres produktu przekierował do kategorii; ceny nie zostały potwierdzone.",
+		alternative: "W szczegółach książki wyszukaj tytuł w Świecie Książki. Sprawdź język, format papierowy i dostępność, a ofertę dodaj ręcznie."
+	},
+	"Chaos Games": {
+		url: "https://www.chaos-games.pl/",
+		reason: "Polski sklep hobbystyczny z katalogiem książek Herezji Horusa. Próba odczytu 17.10.2026 zakończyła się HTTP 403.",
+		alternative: "Otwórz wyszukiwanie tytułu w szczegółach książki. Potwierdź aktualną cenę i dostępność u sprzedawcy, następnie dodaj ofertę ręcznie."
+	},
+	"Pierwodruk": {
+		url: "https://antykwariatpierwodruk.pl/sklep/",
+		reason: "Sklep i wyszukiwarka zwracają HTTP 500 podczas weryfikacji 10.10.2026.",
+		alternative: "Otwórz sklep i sprawdź ofertę ręcznie. Automatyczny odczyt wymaga przywrócenia działania strony."
+	},
+	"Mepel": {
+		url: "https://mepel.pl/ksiazki",
+		reason: "Odczyt strony produktu jest blokowany również z alternatywnego serwera Vercel (HTTP 403).",
+		alternative: "Wyszukaj tytuł w sklepie i dodaj konkretną ofertę ręcznie. Poprzednie oferty pozostają w historii."
+	},
+	"ERLI": {
+		url: "https://erli.pl/kategoria?phrase=Warhammer",
+		reason: "Wyszukiwanie jest dostępne, ale sprawdzone strony produktów blokują odczyt (HTTP 403).",
+		alternative: "Wyszukaj tytuł i dodaj cenę konkretnego produktu ręcznie. Sama wyszukiwarka nie potwierdza stanu ani dostępności."
+	},
+	"SkupSzop": {
+		url: "https://skupszop.pl/",
+		reason: "Nie potwierdzono działającego czytnika wyników i cen produktów.",
+		alternative: "Sprawdź egzemplarz w sklepie i dodaj ofertę ręcznie; „jak nowa” oznacza książkę używaną."
+	},
+	"Allegro": {
+		url: "https://allegro.pl/listing?string=Warhammer+książka",
+		reason: "Brak działającego publicznego odczytu cen w tym skanerze.",
+		alternative: "Wyszukaj tytuł i dodaj ofertę ręcznie. Allegro Lokalnie ma osobny skaner."
+	},
+	"Warhammer.com": {
+		url: "https://www.warhammer.com/en-PL/black-library-lp",
+		reason: "Nie zweryfikowano czytnika papierowych książek, cen i dostępności z dynamicznego katalogu.",
+		alternative: "Otwórz dział Black Library. Publiczne dane strony istnieją, ale wymagają osobnego, zweryfikowanego czytnika."
+	},
+	"Czytam.pl": {
+		url: "https://czytam.pl/szukaj?q=Warhammer",
+		reason: "Wyniki i część danych produktu są uzupełniane przez JavaScript; pełnego odczytu nie potwierdzono.",
+		alternative: "Wyszukaj tytuł w sklepie i dodaj ofertę ręcznie; dostępna cena w kodzie strony nie wystarcza do potwierdzenia dostępności."
+	},
+	"Antykwariat Evos": {
+		url: "https://antykwariatevos.pl/",
+		reason: "Brak zweryfikowanego czytnika wyszukiwarki i danych egzemplarza.",
+		alternative: "Publiczna wyszukiwarka sklepu jest dostępna; aktualną cenę i stan sprawdź ręcznie."
+	},
+	"Toruński Antykwariat Księgarski": {
+		url: "https://antykwariat-torun.pl/",
+		reason: "Brak zweryfikowanego czytnika wyszukiwarki i danych egzemplarza.",
+		alternative: "Użyj wyszukiwarki sklepu i dodaj konkretną ofertę ręcznie."
+	},
+	"Antykwariat Warszawa": {
+		url: "https://antykwariatwaw.pl/",
+		reason: "Brak zweryfikowanego czytnika cen i dostępności.",
+		alternative: "Użyj wyszukiwarki sklepu. Link do wyszukiwania tytułu jest też w szczegółach książki."
+	},
+	"Antykwariat Gelber": {
+		url: "https://antykwariat-gelber.pl/pl/shop/search/1/?search=Warhammer",
+		reason: "Nie potwierdzono pełnego automatycznego odczytu danych egzemplarza.",
+		alternative: "Sklep udostępnia publiczny formularz wyszukiwania; dodaj cenę i stan ręcznie."
+	},
+	"Antykwariat Hobbit": {
+		url: "https://antykwariathobbit.pl/?post_type=product&s=Warhammer",
+		reason: "Nie potwierdzono działającego czytnika ofert i stanu egzemplarza.",
+		alternative: "Wyszukiwanie produktów jest dostępne; odczyt ceny i dostępności wymaga dalszej weryfikacji."
+	},
+	"Ceneo": {
+		url: "https://www.ceneo.pl/;szukaj-warhammer",
+		reason: "Źródło informacyjne; nie jest objęte automatycznym skanem.",
+		alternative: "Porównaj sklepy i sprawdź cenę w sklepie docelowym."
+	},
+	"World of Books": {
+		url: "https://www.worldofbooks.com/en-gb/search?text=Warhammer",
+		reason: "Przygotowany link do wyszukiwania; brak zweryfikowanego czytnika.",
+		alternative: "Sprawdź wydanie, stan i dostawę do Polski, następnie dodaj ofertę ręcznie."
+	}
+};
+var isManualScanSource = (name) => Object.hasOwn(manualSourceDetails, name);
+//#endregion
+//#region lib/vinted-policy.ts
+function vintedFailure(status, header = null, now = Date.now(), captcha = false) {
+	const code = captcha ? "CAPTCHA" : status === 429 ? "HTTP_429" : status === 403 ? "HTTP_403" : "HTTP_" + status;
+	const fallback = 3e4;
+	const seconds = header?.trim() && /^\d+$/.test(header.trim()) ? Number(header) * 1e3 : NaN;
+	const parsed = Number.isFinite(seconds) ? now + seconds : header ? Date.parse(header) : NaN;
+	const until = Number.isFinite(parsed) ? Math.max(now + fallback, parsed) : now + fallback;
+	const reason = captcha ? "Vinted wymaga CAPTCHA." : status === 429 ? "Vinted ograniczył liczbę zapytań (HTTP 429)." : status === 403 ? "Vinted odmówił dostępu (HTTP 403)." : `Vinted zwrócił błąd HTTP ${status}.`;
+	return Object.assign(new Error(reason), {
+		code,
+		retryAfter: new Date(until).toISOString(),
+		errorOrigin: "source",
+		httpStatus: status
+	});
+}
+function waitVinted(ms, signal) {
+	return new Promise((resolve, reject) => {
+		signal.throwIfAborted();
+		const stop = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", stop);
+			reject(signal.reason);
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", stop);
+			resolve();
+		}, Math.max(0, ms));
+		signal.addEventListener("abort", stop, { once: true });
+	});
+}
 //#endregion
 //#region lib/marketplaces.ts
 function objectAt(text, start) {
@@ -1293,7 +1691,7 @@ var domains = {
 	uk: "www.amazon.co.uk"
 };
 function amazonUrl(b, market) {
-	return "https://" + domains[market] + "/s?k=" + encodeURIComponent(market === "pl" ? b.pl || b.title : b.title) + "&i=stripbooks";
+	return "https://" + domains[market] + "/s?k=" + encodeURIComponent(scanTitle(b, market !== "pl")) + "&i=stripbooks";
 }
 function moneyAmount(s, market) {
 	const x = clean(s).replace(/&pound;/g, "£").replace(/&euro;/g, "€").replace(/(?:PLN|EUR|GBP|zł|€|£)/gi, "").replace(/\s/g, "");
@@ -1383,7 +1781,7 @@ var bookstores = [
 	}
 ];
 function bookstoreUrl(b, shop) {
-	const q = encodeURIComponent(shop === "blackwells" ? b.title : b.pl || b.title);
+	const q = encodeURIComponent(scanTitle(b, shop === "blackwells"));
 	return shop === "empik" ? "https://www.empik.com/szukaj/produkt?q=" + q : shop === "erli" ? "https://erli.pl/kategoria?phrase=" + q : shop === "tantis" ? "https://tantis.pl/szukaj?query=" + q : shop === "tania" ? "https://www.taniaksiazka.pl/Search?q=" + q : "https://blackwells.co.uk/bookshop/search/?keyword=" + q;
 }
 function attr(tag, key) {
@@ -1558,7 +1956,7 @@ async function bookstoreOffers(b, checked, shop, read) {
 			lastError = e;
 		}
 	}), 2);
-	if (!out.length && String(lastError).includes("blocked")) throw Error("blocked");
+	if (!out.length && lastError) throw lastError;
 	if (!out.length && !productWithoutPrice && (searchFailed || failed || !urls.length && !/nie znaleziono|brak wynik|no results|0 results/i.test(clean(searchHTML)) && !(shop === "tania" && /<h1\b[^>]*class=["'][^"']*listing__title[^"']*["'][^>]*>[\s\S]*?Wyniki wyszukiwania/i.test(searchHTML)))) throw Error("Nie udało się potwierdzić cen księgarni.");
 	return {
 		offers: [...new Map(out.map((o) => [o.id, o])).values()],
@@ -1655,7 +2053,7 @@ function isBundle(b, title) {
 }
 function baseOffer(b, title, url, source, price, currency, condition, checked, contextual = false) {
 	if (!Number.isFinite(price) || price <= 0 || price > 1e5 || classifyPaperBook(clean(title), [b.pl || "", b.title], { authors: bookAuthors(b) }).state === "rejected" || !url.startsWith("https://")) return null;
-	const language = b.pl && (" " + norm(title) + " ").includes(" " + norm(b.pl) + " ") ? "PL" : (" " + norm(title) + " ").includes(" " + norm(b.title) + " ") ? "EN" : "?";
+	const language = b.pl && norm(b.pl) === norm(b.title) ? "?" : b.pl && (" " + norm(title) + " ").includes(" " + norm(b.pl) + " ") ? "PL" : (" " + norm(title) + " ").includes(" " + norm(b.title) + " ") ? "EN" : "?";
 	return {
 		id: source + ":" + url,
 		bookId: b.id,
@@ -1688,6 +2086,20 @@ function parseOlx(html, b, checked) {
 		}
 	} catch {}
 	return out;
+}
+function parseWoo(rows, b, checked) {
+	return rows.flatMap((p) => {
+		const r = baseOffer(b, p.name || "", p.permalink || "", "Copernicus", +p.prices?.price / 10 ** (p.prices?.currency_minor_unit ?? 2), p.prices?.currency_code || "PLN", "new", checked, true);
+		if (!r) return [];
+		r.matchStatus = "matched";
+		r.matchReason = "Tytuł w katalogu wydawcy Copernicus.";
+		const stock = p.stock_availability || {};
+		const explicitOut = p.is_in_stock === false || /out-of-stock|outofstock/i.test(stock.class || "") || /brak w magazynie|brak towaru|brak na stanie|niedost[eę]pn|out of stock/i.test(clean(stock.text || ""));
+		r.available = p.is_in_stock === true && p.is_purchasable === true && p.is_on_backorder !== true && !explicitOut;
+		r.availabilityKnown = explicitOut || typeof p.is_in_stock === "boolean" && (p.is_purchasable === false || p.is_on_backorder === true) || r.available;
+		r.match = norm(clean(p.name)) === norm(b.pl || b.title) ? "exact" : "candidate";
+		return [r];
+	});
 }
 function parseEbay(html, b, checked) {
 	const out = [];
@@ -1735,45 +2147,160 @@ var sourceReaderHosts = {
 	hegemon: "hegemonshop.com",
 	lokalnie: "allegrolokalnie.pl"
 };
-async function sourceReaderResponse(url, token, signal, endpoint) {
-	if (!endpoint || !token || token.length < 32) return null;
+function readerFailure(status, requestId, retryHeader) {
+	const code = status === void 0 ? "READER_CONNECTION" : status === 200 ? "READER_UNVERIFIED_PAGE" : `READER_HTTP_${status}`;
+	return Object.assign(/* @__PURE__ */ new Error((status === 200 ? "Pośrednik Vercel zwrócił stronę weryfikacji bez potwierdzonej odpowiedzi źródła." : status === 401 || status === 403 ? "Pośrednik Vercel odmówił dostępu. Sprawdź autoryzację i ochronę wdrożenia." : status === 429 ? "Pośrednik Vercel ogranicza zapytania lub jest przeciążony." : status === void 0 ? "Nie udało się połączyć z pośrednikiem Vercel." : "Pośrednik Vercel nie wykonał odczytu.") + (status === void 0 ? "" : ` HTTP ${status}.`) + " Nie potwierdzono odpowiedzi źródła; to nie jest potwierdzona blokada serwisu."), {
+		code,
+		errorOrigin: "reader",
+		...status === void 0 ? {} : { httpStatus: status },
+		...requestId ? { requestId } : {},
+		retryAfter: vintedFailure(status ?? 502, retryHeader).retryAfter
+	});
+}
+function readerTraceMessage(attempts) {
+	const recent = attempts.slice(-2);
+	if (!recent.some((a) => a.httpStatus && a.httpStatus >= 400 || a.errorCode)) return "";
+	const labels = recent.map((a) => (a.reader === "primary" ? "Vercel 1" : "Vercel 2") + " (" + a.host + "): " + (a.httpStatus ? "HTTP " + a.httpStatus : "błąd połączenia"));
+	const both = recent.length === 2 && recent[0].reader !== recent[1].reader && recent.every((a) => a.httpStatus === 403 || a.httpStatus === 429);
+	return " Próby serwerów: " + labels.join(" → ") + "." + (both ? " Przełączenie wykonane; oba serwery zakończyły odczyt odmową." : "");
+}
+async function sourceReaderResponse(url, token, signal, endpoint, backup, primaryProtectionToken) {
+	if (!token || token.length < 32) return null;
 	const target = new URL(url), source = Object.entries(sourceReaderHosts).find(([, host]) => target.hostname === host || target.hostname === "www." + host)?.[0];
 	if (!source) return null;
 	if (target.protocol !== "https:" || target.username || target.password || target.port) throw Error("Nieprawidłowy adres źródła.");
-	const readerUrl = new URL(endpoint);
-	if (readerUrl.protocol !== "https:" || readerUrl.username || readerUrl.password || readerUrl.port || readerUrl.hash || readerUrl.search) throw Error("Nieprawidłowa konfiguracja serwera odczytu.");
-	const response = await fetch(readerUrl.href, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			Authorization: "Bearer " + token
-		},
-		body: JSON.stringify({
-			source,
-			url
-		}),
-		signal,
-		redirect: "manual",
-		cache: "no-store"
-	});
-	if (response.status >= 300 && response.status < 400) {
-		await response.body?.cancel();
-		throw Error("Serwer odczytu zwrócił nieoczekiwane przekierowanie.");
+	const validate = (value) => {
+		const u = new URL(value);
+		if (u.protocol !== "https:" || u.username || u.password || u.port || u.hash || u.search) throw Error("Nieprawidłowa konfiguracja serwera odczytu.");
+		return u.href;
+	};
+	const primary = {
+		endpoint: validate(endpoint || (source === "vinted" ? "https://nextjs-boilerplate-lb8m.vercel.app/api/source-page" : "https://nextjs-boilerplate-lb8m.vercel.app/api/source-page")),
+		token,
+		reader: "primary",
+		protectionToken: primaryProtectionToken
+	};
+	const secondary = backup && backup.token.length >= 32 ? {
+		endpoint: validate(backup.endpoint),
+		token: backup.token,
+		reader: "backup",
+		protectionToken: backup.protectionToken
+	} : void 0;
+	const choices = secondary && secondary.endpoint !== primary.endpoint ? backup?.preferBackup?.(source) ? [secondary, primary] : [primary, secondary] : [primary];
+	let after;
+	for (let index = 0; index < choices.length; index++) {
+		signal?.throwIfAborted();
+		const choice = choices[index];
+		backup?.onAttempt?.(choice.reader, after);
+		let response;
+		try {
+			response = await fetch(choice.endpoint, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer " + choice.token,
+					...choice.protectionToken ? { "x-vercel-protection-bypass": choice.protectionToken } : {}
+				},
+				body: JSON.stringify({
+					source,
+					url
+				}),
+				signal,
+				redirect: "manual",
+				cache: "no-store"
+			});
+		} catch (error) {
+			signal?.throwIfAborted();
+			backup?.onResult?.({
+				reader: choice.reader,
+				host: new URL(choice.endpoint).hostname,
+				errorOrigin: "reader",
+				errorCode: "READER_CONNECTION"
+			});
+			throw Object.assign(readerFailure(void 0), { reader: choice.reader });
+		}
+		const upstream = response.headers.get("x-source-upstream-status");
+		const verified = upstream === String(response.status) && /^[45]\d\d$/.test(upstream);
+		backup?.onResult?.({
+			reader: choice.reader,
+			host: new URL(choice.endpoint).hostname,
+			httpStatus: response.status,
+			errorOrigin: verified || response.headers.has("x-source-fetched-at") ? "source" : "reader",
+			requestId: response.headers.get("x-vercel-id")?.replace(/[^a-zA-Z0-9:_.-]/g, "").slice(0, 120)
+		});
+		if (index === 0 && choices.length === 2 && [403, 429].includes(response.status)) {
+			const next = choices[1];
+			await backup?.onSwitch?.(source, next.reader === "backup", response.status);
+			if (verified && response.status === 429) {
+				backup?.onAttempt?.(choice.reader, 429, true);
+				return response;
+			}
+			after = response.status;
+			await response.body?.cancel();
+			continue;
+		}
+		const requestId = response.headers.get("x-vercel-id")?.replace(/[^a-zA-Z0-9:_.-]/g, "").slice(0, 120);
+		if (!response.ok && !verified) {
+			await response.body?.cancel();
+			throw Object.assign(readerFailure(response.status, requestId, response.headers.get("retry-after")), {
+				reader: choice.reader,
+				failoverAfter: after
+			});
+		}
+		return response;
 	}
-	return response;
+	throw readerFailure(void 0);
 }
-async function fetchLimited(url, parent, readerToken, readerEndpoint) {
-	parent?.throwIfAborted();
-	const response = await sourceReaderResponse(url, readerToken, parent, readerEndpoint) || await fetch(url, {
-		headers: {
-			Accept: "text/html",
-			"User-Agent": "ArchiwumWarcraft/1.0 (book price comparison)"
-		},
-		signal: parent ? AbortSignal.any([parent, AbortSignal.timeout(18e3)]) : AbortSignal.timeout(18e3)
+async function directSourceResponse(url, signal) {
+	const seen = /* @__PURE__ */ new Set();
+	let current = url;
+	for (let hop = 0; hop <= 5; hop++) {
+		signal.throwIfAborted();
+		const target = new URL(current);
+		target.hash = "";
+		current = target.href;
+		if (target.protocol !== "https:" || target.username || target.password || target.port) throw Error("Nieprawidłowe przekierowanie źródła.");
+		if (seen.has(current)) throw Object.assign(/* @__PURE__ */ new Error("Serwis zapętla przekierowania; odczyt przerwany."), {
+			errorOrigin: "source",
+			code: "REDIRECT_LOOP"
+		});
+		seen.add(current);
+		const response = await fetch(current, {
+			headers: {
+				Accept: "text/html",
+				"User-Agent": "ArchiwumWarcraft/1.0 (book price comparison)"
+			},
+			redirect: "manual",
+			signal
+		});
+		if (![
+			301,
+			302,
+			303,
+			307,
+			308
+		].includes(response.status) || !response.headers.get("location")) return response;
+		const next = new URL(response.headers.get("location"), current).href;
+		await response.body?.cancel();
+		current = next;
+	}
+	throw Object.assign(/* @__PURE__ */ new Error("Serwis przekroczył limit 5 przekierowań."), {
+		errorOrigin: "source",
+		code: "REDIRECT_LIMIT"
 	});
-	if (!response.ok && new URL(url).hostname.endsWith("vinted.pl")) throw vintedFailure(response.status, response.headers.get("Retry-After"));
+}
+async function fetchLimited(url, parent, readerToken, readerEndpoint, readerBackup, readerProtectionToken) {
+	parent?.throwIfAborted();
+	const timeout = new URL(url).hostname === "www.vinted.pl" ? 23e3 : 18e3;
+	const relayed = await sourceReaderResponse(url, readerToken, parent, readerEndpoint, readerBackup, readerProtectionToken);
+	const response = relayed || await directSourceResponse(url, parent ? AbortSignal.any([parent, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout));
+	if (!response.ok && new URL(url).hostname.endsWith("vinted.pl")) throw Object.assign(vintedFailure(response.status, response.headers.get("Retry-After")), { requestId: relayed?.headers.get("x-vercel-id")?.replace(/[^a-zA-Z0-9:_.-]/g, "").slice(0, 120) });
 	if (!response.ok && /^www\.amazon\.(?:pl|de|co\.uk)$/.test(new URL(url).hostname)) throw amazonFailure(response.status, response.headers.get("Retry-After"));
-	if (!response.ok) throw new Error(response.status === 403 || response.status === 429 ? "blocked HTTP " + response.status : "HTTP " + response.status);
+	if (!response.ok) throw Object.assign(/* @__PURE__ */ new Error(response.status === 403 || response.status === 429 ? "blocked HTTP " + response.status : "HTTP " + response.status), {
+		errorOrigin: "source",
+		httpStatus: response.status,
+		code: "HTTP_" + response.status
+	});
 	const reader = response.body?.getReader();
 	if (!reader) return "";
 	const chunks = [];
@@ -1801,7 +2328,8 @@ async function fetchLimited(url, parent, readerToken, readerEndpoint) {
 	} catch {
 		text = new TextDecoder().decode(bytes);
 	}
-	if (/captcha|verify you are human|Access Denied/.test(text) && text.length < 1e5) {
+	if (/captcha|verify you are human|Access Denied|Just a moment\.\.\.|cf-chl-/.test(text) && text.length < 1e5) {
+		if (relayed && !response.headers.has("x-source-fetched-at")) throw readerFailure(response.status);
 		if (new URL(url).hostname.endsWith("vinted.pl")) throw vintedFailure(200, null, Date.now(), true);
 		if (/^www\.amazon\.(?:pl|de|co\.uk)$/.test(new URL(url).hostname)) throw amazonFailure(200, null, Date.now(), true);
 		throw new Error("blocked");
@@ -1820,11 +2348,13 @@ async function readWithConnectionRetry(read, signal, enabled) {
 		return read();
 	}
 }
-var SCANNER_VERSION = 5;
+var SCANNER_VERSION = 51;
 var sourcePriority = {
 	"Vinted": 10,
 	"Booksale": 3,
 	"Megaksiążki": 2,
+	"Hegemon Shop": 1,
+	"Pan Mysza": 1,
 	"Allegro Lokalnie": 1
 };
 async function runLimited(jobs, limit = 3, canStart = () => true) {
@@ -1838,70 +2368,59 @@ async function runLimited(jobs, limit = 3, canStart = () => true) {
 	}));
 	return output.filter(() => true);
 }
-async function vintedOffers(b, checked, read, budget = 9e4, store, maxPages = Infinity) {
-	const terms = Array.from(new Set([b.pl, b.title].filter(Boolean)));
-	const saved = store ? reusableVintedCheckpoint(await store.load(), b) : null;
-	const startedAt = saved?.startedAt || checked;
-	const queue = terms.map((term, i) => ({
+async function vintedOffers(b, checked, read, budget = 9e4) {
+	const queue = scanTitles(b).map((term) => ({
 		term,
-		nextPage: saved ? saved.terms[i].nextPage : 1,
-		pages: saved?.terms[i].pages || 0,
-		limited: saved?.terms[i].limited || false,
-		contents: /* @__PURE__ */ new Set(),
-		failed: false
+		url: vintedSearchUrl(term),
+		pages: 0,
+		seen: /* @__PURE__ */ new Set(),
+		contents: /* @__PURE__ */ new Set()
 	}));
-	const offers = [...saved?.offers || []];
-	let successes = 0, error;
-	const unique = () => Array.from(new Map(offers.map((o) => [o.url.match(/\/items\/(\d+)/)?.[1] || o.id, o])).values());
-	const checkpoint = () => ({
-		version: 1,
-		startedAt,
-		updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-		terms: queue.map(({ term, nextPage, pages, limited }) => ({
-			term,
-			nextPage,
-			pages,
-			limited
-		})),
-		offers: unique()
-	});
-	const until = Date.now() + Math.max(1, budget - Math.min(3e3, budget * .2));
-	while (successes < maxPages && queue.some((q) => q.nextPage !== null && !q.failed)) {
-		for (const q of [...queue].sort((a, b) => a.pages - b.pages)) {
-			if (successes >= maxPages) break;
-			if (q.nextPage === null || q.failed) continue;
+	const offers = [];
+	let partial = false, successes = 0;
+	let error;
+	const until = Date.now() + Math.max(1, budget - Math.min(2e3, budget * .15));
+	while (queue.some((q) => q.url && q.pages < 10)) {
+		for (const q of queue) {
+			if (!q.url || q.pages >= 10) continue;
 			const remaining = until - Date.now();
-			if (remaining <= 0) break;
+			if (remaining <= 0) {
+				partial = true;
+				break;
+			}
 			try {
-				const url = new URL(vintedSearchUrl(q.term));
-				if (q.nextPage > 1) url.searchParams.set("page", String(q.nextPage));
-				const html = await withDeadline((signal) => read(url.href, signal), Math.min(25e3, remaining), "Przekroczono czas strony Vinted.");
+				if (q.seen.has(q.url)) throw Error("Powtórzony adres strony wyników.");
+				q.seen.add(q.url);
+				const html = await withDeadline((signal) => read(q.url, signal), Math.min(25e3, remaining), "Przekroczono czas strony Vinted.");
 				if (q.contents.has(html)) throw Error("Powtórzona treść strony wyników.");
-				const parsed = parseVinted(html, b, checked), next = nextSearchPage(html, url.href);
-				const nextPage = next ? Number(new URL(next).searchParams.get("page")) : null;
-				if (nextPage !== null && (!Number.isInteger(nextPage) || nextPage !== q.nextPage + 1)) throw Error("Nieprawidłowa kolejna strona Vinted.");
 				q.contents.add(html);
-				offers.push(...parsed);
+				offers.push(...parseVinted(html, b, checked));
 				successes++;
 				q.pages++;
-				q.limited = nextPage !== null && nextPage > 10;
-				q.nextPage = q.limited ? null : nextPage;
-				await store?.save(checkpoint());
+				q.url = nextSearchPage(html, q.url) || "";
+				if (q.url && q.pages === 10) partial = true;
 			} catch (e) {
+				partial = true;
 				error = e;
-				q.failed = true;
+				q.url = "";
 				if (error.retryAfter) break;
 			}
 		}
 		if (error?.retryAfter || Date.now() >= until) break;
 	}
-	const pending = queue.some((q) => q.nextPage !== null), partial = pending || queue.some((q) => q.limited) || !!error;
-	if (!successes && !saved) throw error || /* @__PURE__ */ new Error("Nie odczytano wyników Vinted.");
+	if (queue.some((q) => q.url)) partial = true;
+	if (!successes) throw error || /* @__PURE__ */ new Error("Nie odczytano wyników Vinted.");
 	return {
-		offers: unique(),
+		offers: Array.from(new Map(offers.map((o) => [o.url.match(/\/items\/(\d+)/)?.[1] || o.id, o])).values()),
 		partial,
-		...pending || error ? { retryAfter: error?.retryAfter || new Date(Date.now() + (successes >= maxPages ? 1500 : 3e4)).toISOString() } : {},
-		coverage: "Vinted: kategoria Książki; tytuły PL/EN sprawdzane naprzemiennie. " + (saved ? "Wznowiono zapisany odczyt. " : "") + (Number.isFinite(maxPages) ? "Szybki przegląd. " : "") + queue.map((q) => `„${q.term}”: ${q.pages} stron (limit 10)` + (q.nextPage !== null ? `; do wznowienia strona ${q.nextPage}` : "") + ".").join(" ") + (pending ? " Zapisane oferty i postęp stron pozostają do kolejnej próby." : queue.some((q) => q.limited) ? " Osiągnięto limit stron." : "") + (error ? " " + error.message : "") + " Brak dopasowań nie potwierdza braku książki w całym serwisie."
+		...error?.retryAfter ? { retryAfter: error.retryAfter } : {},
+		...error ? { failure: {
+			errorOrigin: error.errorOrigin,
+			errorCode: error.code,
+			httpStatus: error.httpStatus,
+			requestId: error.requestId
+		} } : {},
+		coverage: "Vinted: kategoria Książki; tytuły PL/EN sprawdzane naprzemiennie. " + queue.map((q) => `„${q.term}”: ${q.pages} stron (limit 10).`).join(" ") + (partial ? " Odczyt niepełny — zachowano znalezione oferty." : "") + (error ? " " + error.message : "") + " Brak dopasowań nie potwierdza braku książki w całym serwisie."
 	};
 }
 async function marketplacePages(url, read, parse) {
@@ -1925,21 +2444,18 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	source: 35e3,
 	book: 12e4,
 	vinted: 9e4
-}, parent, vintedPolicy, marketplacePolicies, readerToken, readerEndpoint, vintedCheckpoint) {
+}, parent, vintedPolicy, marketplacePolicies, readerToken, readerEndpoint, readerBackup) {
 	const launchUntil = budgets.launchWindow === void 0 ? Infinity : Date.now() + budgets.launchWindow;
 	const bookSignal = parent ? AbortSignal.any([parent, AbortSignal.timeout(budgets.book)]) : AbortSignal.timeout(budgets.book);
 	const checked = (/* @__PURE__ */ new Date()).toISOString();
+	const language = b.searchLanguage || "all";
+	if (language === "PL" && !b.pl) throw Error("Brak polskiego tytułu do skanowania.");
 	const links = searchLinks(b);
 	const results = await runLimited([
 		{
 			source: "Allegro Lokalnie",
-			url: "https://allegrolokalnie.pl/oferty/q/" + encodeURIComponent(b.pl || b.title),
+			url: "https://allegrolokalnie.pl/oferty/q/" + encodeURIComponent(scanTitle(b)),
 			run: (read) => allegroOffers(b, checked, read)
-		},
-		{
-			source: "OLX",
-			url: links[0].url,
-			run: async (read) => marketplacePages(links[0].url, read, (html) => parseOlx(html, b, checked))
 		},
 		{
 			source: "SkupSzop",
@@ -1961,8 +2477,8 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 		})),
 		{
 			source: "Vinted",
-			url: links[2].url,
-			run: (read) => vintedOffers(b, checked, read, budgets.vinted || 9e4, vintedCheckpoint, budgets.vintedPagesPerPass)
+			url: vintedSearchUrl(scanTitle(b)),
+			run: (read) => vintedOffers(b, checked, read, budgets.vinted ?? budgets.source)
 		},
 		...["pl"].map((m) => ({
 			source: "Amazon " + m.toUpperCase(),
@@ -1982,6 +2498,23 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	].includes(j.source) && !isAntiquarianSource(j.source))).sort((a, b) => (sourcePriority[b.source] || 0) - (sourcePriority[a.source] || 0)).map((j) => async () => {
 		const started = performance.now();
 		let requestCount = 0;
+		const readerAttempts = [];
+		let readerUsed, switchedAfter, deferredSwitch = false;
+		const sourceReaderBackup = readerBackup ? {
+			...readerBackup,
+			onResult: (attempt) => {
+				readerAttempts.push(attempt);
+				if (readerAttempts.length > 10) readerAttempts.shift();
+			},
+			onAttempt: (reader, after, deferred) => {
+				readerUsed = reader;
+				if (after !== void 0) {
+					switchedAfter = after;
+					deferredSwitch = !!deferred;
+					if (!deferred) requestCount++;
+				}
+			}
+		} : void 0;
 		const result = await (async () => {
 			try {
 				bookSignal.throwIfAborted();
@@ -2002,6 +2535,15 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 				};
 				const sourceBudget = j.source === "Vinted" ? budgets.vinted ?? budgets.source : budgets.source;
 				const sourceUntil = Date.now() + Math.max(1, sourceBudget - Math.min(1500, sourceBudget * .1));
+				if (!scanSourceSupportsLanguage(j.source, language)) return {
+					offers: [],
+					status: {
+						source: j.source,
+						url: j.url,
+						state: "skipped",
+						message: "Źródło nie dotyczy wybranego języka " + language + "."
+					}
+				};
 				const response = await withDeadline((signal) => j.run(async (url, child) => {
 					const remaining = sourceUntil - Date.now();
 					if (remaining <= 0) throw new DOMException("Wyczerpano czas odczytu źródła.", "TimeoutError");
@@ -2014,20 +2556,26 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 						const policy = j.source === "Vinted" ? vintedPolicy : marketplacePolicies?.[j.source];
 						await policy?.beforeRead(combined);
 						try {
-							requestCount++;
-							return await readWithConnectionRetry(() => fetchLimited(url, combined, readerToken, readerEndpoint), combined, j.source === "Vinted");
+							return await readWithConnectionRetry(async () => {
+								requestCount++;
+								return await fetchLimited(url, combined, readerToken, readerEndpoint, sourceReaderBackup);
+							}, combined, j.source === "Vinted");
 						} catch (e) {
-							if (policy) {
+							if (policy && e.errorOrigin !== "reader") {
 								const failure = e;
-								if (!combined.aborted && !failure.retryAfter && failure.name !== "AbortError") Object.assign(failure, { retryAfter: new Date(Date.now() + 3e4).toISOString() });
-								if (!combined.aborted) await policy.onFailure(failure);
+								if (!failure.retryAfter && failure.name !== "AbortError") Object.assign(failure, { retryAfter: new Date(Date.now() + 3e4).toISOString() });
+								await policy.onFailure(failure);
 							}
 							throw e;
 						}
 					}, Math.min(j.source === "Vinted" ? 25e3 : 18e3, remaining), "Przekroczono czas odczytu strony źródła.");
 				}), sourceBudget, "Przekroczono czas odczytu źródła.", bookSignal);
 				if (j.source.startsWith("Amazon") && response.retryAfter) await marketplacePolicies?.[j.source]?.onFailure(Object.assign(/* @__PURE__ */ new Error("Nie udało się odczytać kolejnej strony Amazon."), { retryAfter: response.retryAfter }));
-				const offers = response.offers;
+				const offers = response.offers.filter((o) => scanOfferInLanguage(o, language)).map((o) => language !== "all" && o.languageVerified !== true ? {
+					...o,
+					matchStatus: "review",
+					matchReason: "Język wydania wymaga potwierdzenia u sprzedawcy."
+				} : o);
 				const manual = "manual" in response && response.manual;
 				const partial = "partial" in response && response.partial;
 				return {
@@ -2035,6 +2583,7 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 					status: {
 						source: j.source,
 						url: j.url,
+						...response.failure || {},
 						...response.retryAfter ? { retryAfter: response.retryAfter } : {},
 						state: manual ? "manual" : partial ? "partial" : offers.length ? "ok" : "empty",
 						message: manual ? "coverage" in response ? String(response.coverage) : "SkupSzop: odczyt produktów zablokowany podczas sprawdzania. Wyszukaj tytuł i dodaj ofertę ręcznie. „Jak nowa” oznacza używaną książkę." : (offers.length ? `${offers.length} dopasowań; ${offers.filter((o) => o.available).length} oznaczonych jako dostępne` : "Brak dopasowanych ofert na odczytanej stronie.") + (partial ? " Odczyt częściowy — szczegóły zakresu poniżej." : "") + ("coverage" in response ? " " + response.coverage : "")
@@ -2045,6 +2594,12 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 				const message = String(e);
 				const timedOut = bookSignal.aborted || e.name === "TimeoutError";
 				const vintedError = e;
+				const failureInfo = {
+					...vintedError.errorOrigin ? { errorOrigin: vintedError.errorOrigin } : {},
+					...vintedError.code ? { errorCode: vintedError.code } : {},
+					...vintedError.httpStatus !== void 0 ? { httpStatus: vintedError.httpStatus } : {},
+					...vintedError.requestId ? { requestId: vintedError.requestId } : {}
+				};
 				const vintedRetry = j.source === "Vinted" ? vintedError.retryAfter : void 0;
 				const blocked = message.includes("blocked") || (j.source === "Vinted" || j.source.startsWith("Amazon")) && [
 					"HTTP_403",
@@ -2060,9 +2615,10 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 						source: j.source,
 						url: j.url,
 						state: blocked ? "blocked" : "error",
+						...failureInfo,
 						...vintedRetry ? { retryAfter: vintedRetry } : {},
 						...amazonRetry ? { retryAfter: amazonRetry } : {},
-						message: amazonRetry ? message + " Odczyt czasowo wstrzymany. Kolejna próba po: " + new Date(amazonRetry).toLocaleTimeString("pl-PL", { timeZone: "Europe/Warsaw" }) + ". Poprzednie ceny pozostają z datą ostatniego odczytu; błąd nie oznacza braku ofert." : vintedRetry ? message + " Odczyt wstrzymany do wskazanego czasu. To nie oznacza braku ofert." : timedOut ? "Przekroczono czas odczytu. Źródło nie zostało w pełni sprawdzone; to nie oznacza braku ofert." : blocked ? "Serwis blokuje automatyczny odczyt. Otwórz wyszukiwanie." : "Nie udało się odczytać źródła. Przyczyna: " + scanErrorDetail(e) + ". Błąd nie oznacza braku ofert."
+						message: vintedError.errorOrigin === "reader" ? vintedError.message + " Przerwa po błędzie pośrednika; poprzednie oferty zachowują datę ostatniego odczytu." : amazonRetry ? message + " Odczyt czasowo wstrzymany. Kolejna próba po: " + new Date(amazonRetry).toLocaleTimeString("pl-PL", { timeZone: "Europe/Warsaw" }) + ". Poprzednie ceny pozostają z datą ostatniego odczytu; błąd nie oznacza braku ofert." : vintedRetry ? message + " Odczyt wstrzymany do wskazanego czasu. To nie oznacza braku ofert." : timedOut ? "Przekroczono czas odczytu. Źródło nie zostało w pełni sprawdzone; to nie oznacza braku ofert." : blocked ? "Serwis blokuje automatyczny odczyt. Otwórz wyszukiwanie." : "Nie udało się odczytać źródła. Przyczyna: " + scanErrorDetail(e) + ". Błąd nie oznacza braku ofert."
 					}
 				};
 			}
@@ -2071,6 +2627,10 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 			...result,
 			status: {
 				...result.status,
+				...readerAttempts.length ? { readerAttempts } : {},
+				...readerUsed ? { reader: readerUsed } : {},
+				...switchedAfter !== void 0 ? { failoverAfter: switchedAfter } : {},
+				message: result.status.message + readerTraceMessage(readerAttempts) + (readerUsed ? " Serwer odczytu: " + (readerUsed === "backup" ? "drugi Vercel" : "pierwszy Vercel") + "." : "") + (switchedAfter !== void 0 ? deferredSwitch ? " Następna próba przejdzie na " + (readerUsed === "backup" ? "pierwszy" : "drugi") + " serwer po zakończeniu przerwy HTTP 429." : " Przełączono serwer po HTTP " + switchedAfter + "." : ""),
 				durationMs: Math.round(performance.now() - started),
 				requestCount
 			}
@@ -2093,7 +2653,8 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	return {
 		id: b.id,
 		checked,
-		scannerVersion: 5,
+		scannerVersion: 51,
+		language,
 		scope,
 		selectedSources,
 		offers,
@@ -2101,4 +2662,4 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	};
 }
 //#endregion
-export { SCANNER_VERSION, baseOffer, clean, isBundle, matches, parseEbay, parseOlx, readWithConnectionRetry, runLimited, scanBook, scanErrorDetail, sourceReaderHosts, sourceReaderResponse, vintedOffers };
+export { SCANNER_VERSION, baseOffer, clean, directSourceResponse, fetchLimited, isBundle, matches, parseEbay, parseOlx, parseWoo, readWithConnectionRetry, readerFailure, readerTraceMessage, runLimited, scanBook, scanErrorDetail, sourceReaderHosts, sourceReaderResponse, vintedOffers };
