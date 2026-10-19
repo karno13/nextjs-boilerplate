@@ -1,6 +1,8 @@
 name: Archiwum Warcraft — darmowy skaner
 on:
   schedule:
+    # 08:00 / 20:00 Europe/Warsaw; the Site gates DST and deduplicates slots.
+    - cron: '0 6,7,18,19 * * *'
     - cron: '37 * * * *'
   workflow_dispatch:
     inputs:

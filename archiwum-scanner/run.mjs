@@ -1,6 +1,8 @@
 import {queueFingerprint,continuationPlan,replacementPlan,dispatchContinuation} from './continuation.mjs';
 import {scanBook,SCANNER_VERSION} from './runtime/scanner.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
+// Source publication is not a scheduled full scan or a shop probe.
+if(process.env.GITHUB_EVENT_NAME==='push'){console.log('Scanner source updated; normal schedules remain in control.');process.exit(0);}
 
 const origin='https://warhammer-archiwum-kolekcji.karnol13.chatgpt.site';
 const endpoint=origin+'/api/github-scan';
@@ -52,6 +54,7 @@ async function main(){
   for(const source of report.sources)console.log(JSON.stringify({source:source.source,state:source.state,httpStatus:source.httpStatus,offers:report.offers.filter(o=>o.source===source.source).length}));
   return;
  }
+ if(process.env.GITHUB_EVENT_NAME==='schedule')console.log(JSON.stringify({automaticScan:await api({action:'scheduled-start'})}));
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');
  if(!status.queue||status.queue.paused||status.queue.done>=status.queue.total){console.log('No unfinished active queue. Nothing to scan.');return;}
  const generation=Number(process.env.ARCHIWUM_CONTINUATION||0),expectedFingerprint=process.env.ARCHIWUM_QUEUE_FINGERPRINT||'';

@@ -56,6 +56,7 @@ async function main(){
   for(const source of report.sources)console.log(JSON.stringify({source:source.source,state:source.state,httpStatus:source.httpStatus,offers:report.offers.filter(o=>o.source===source.source).length}));
   return;
  }
+ if(process.env.GITHUB_EVENT_NAME==='schedule')console.log(JSON.stringify({automaticScan:await api({action:'scheduled-start'})}));
  const status=await api({action:'status'});if(!status||status.changed)throw Error('Scanner access not confirmed');
  if(!status.queue||status.queue.paused||status.queue.done>=status.queue.total){console.log('No unfinished active queue. Nothing to scan.');return;}
  const generation=Number(process.env.ARCHIWUM_CONTINUATION||0),expectedFingerprint=process.env.ARCHIWUM_QUEUE_FINGERPRINT||'';
