@@ -95,7 +95,7 @@ function nextSearchPage(html, current) {
 	}
 	return null;
 }
-async function readSearchPages(start, read, limit = 3) {
+async function readSearchPages(start, read, limit = 3, firstPageTimeout = 12e3) {
 	const pages = [], seen = /* @__PURE__ */ new Set(), contents = /* @__PURE__ */ new Set();
 	let url = start, partial = false, error;
 	let reason = "";
@@ -108,7 +108,7 @@ async function readSearchPages(start, read, limit = 3) {
 		seen.add(url);
 		let html;
 		try {
-			html = await withDeadline((signal) => read(url, signal), pages.length ? 6e3 : 12e3, "Przekroczono czas odczytu strony wyników.");
+			html = await withDeadline((signal) => read(url, signal), pages.length ? 6e3 : firstPageTimeout, "Przekroczono czas odczytu strony wyników.");
 		} catch (e) {
 			if (!pages.length) throw e;
 			error = e;
@@ -428,7 +428,12 @@ function classifyPaperBook(title, names, evidence = {}) {
 		reason: "Tytuł i właściwy autor."
 	};
 	const exact = identities.some((n) => listingIdentity(title) === n || n.startsWith("the ") && listingIdentity(title) === n.slice(4));
-	if ((!identities.every((n) => n.split(" ").length <= 2) || exact) && (/insignis|blizzard|pocket books|titan books|del rey|dark horse/i.test(evidence.publisher || "") || /blizzard/i.test(evidence.publisher || "") && exact || warhammerContext.test(text) && /\b(book|books|novel|paperback|hardback|hardcover|ksiazka|ksiazki|powiesc|powiesci|tom)\b/.test(text))) return {
+	const shortTitle = identities.every((n) => n.split(" ").length <= 2);
+	if (exact && warhammerContext.test(text)) return {
+		state: "matched",
+		reason: "Pełny tytuł i jednoznaczny kontekst Warcraft."
+	};
+	if ((!shortTitle || exact) && (/insignis|blizzard|pocket books|titan books|del rey|dark horse/i.test(evidence.publisher || "") || /blizzard/i.test(evidence.publisher || "") && exact || warhammerContext.test(text) && /\b(book|books|novel|paperback|hardback|hardcover|ksiazka|ksiazki|powiesc|powiesci|tom)\b/.test(text))) return {
 		state: "matched",
 		reason: "Tytuł i kontekst Warcraft."
 	};
@@ -1819,8 +1824,61 @@ function nodes(html) {
 	} catch {}
 	return out;
 }
+function tantisPage(html) {
+	for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+		if (attr(match[1], "data-page") !== "app" || attr(match[1], "type") !== "application/json") continue;
+		try {
+			const page = JSON.parse(match[2]);
+			if (["SearchPage", "ProductPage"].includes(page.component) && page.props && typeof page.props === "object") return page;
+		} catch {}
+	}
+}
+function parseTantisPage(html, b, checked, pageUrl) {
+	const page = tantisPage(html), p = page?.component === "ProductPage" ? page.props.product : null;
+	if (!p || p.book !== true || typeof p.name !== "string") return [];
+	const url = safeUrl(p.url || p.path || "", "tantis");
+	if (!url || url !== safeUrl(pageUrl, "tantis")) return [];
+	const attributes = Array.isArray(p.attributes) ? p.attributes : [];
+	const value = (code) => attributes.find((a) => a.code === code)?.attributeValue;
+	if (!/mi[eę]kka|twarda|paperback|hardback|hardcover/i.test(String(value("final_cover_type") || ""))) return [];
+	const offer = baseOffer(b, p.name, url, "Tantis", Number(p.price), "PLN", "new", checked, true);
+	if (!offer) return [];
+	const author = (Array.isArray(p.authors) ? p.authors : []).map((a) => a.name).filter(Boolean).join(", ");
+	const publisher = value("final_publisher") || Object.values(p.publishers || {}).map((a) => a.name).filter(Boolean).join(", ");
+	const isbn = String(p.isbn || p.ean || "");
+	const match = classifyPaperBook(p.name, [b.title, b.pl || ""], {
+		authors: bookAuthors(b),
+		author,
+		publisher,
+		isbn
+	});
+	if (match.state === "rejected") return [];
+	Object.assign(offer, {
+		author,
+		publisher,
+		isbn,
+		image: p.image?.mediumImage,
+		matchStatus: match.state,
+		matchReason: match.reason,
+		available: p.available === true,
+		availabilityKnown: typeof p.available === "boolean"
+	});
+	const language = String(value("final_language") || "");
+	if (/^(polski|angielski|english|polish)$/i.test(language)) {
+		offer.language = /polski|polish/i.test(language) ? "PL" : "EN";
+		offer.languageVerified = true;
+	}
+	return [offer];
+}
 function discoverBookstoreUrls(html, b, shop) {
 	const urls = /* @__PURE__ */ new Set();
+	if (shop === "tantis") {
+		const page = tantisPage(html);
+		for (const p of page?.component === "SearchPage" && Array.isArray(page.props.products) ? page.props.products : []) if (p.book === true && typeof p.name === "string" && matches(b, p.name, true)) {
+			const url = safeUrl(p.path || p.url || "", shop);
+			if (url) urls.add(url);
+		}
+	}
 	for (const n of nodes(html)) if (n.name && matches(b, n.name, true)) {
 		const url = safeUrl(n.url || n["@id"] || "", shop);
 		if (url) urls.add(url);
@@ -1835,6 +1893,7 @@ function discoverBookstoreUrls(html, b, shop) {
 }
 function parseBookstore(html, b, checked, shop, pageUrl) {
 	if (shop === "empik") return parseEmpik(html, b, checked, pageUrl);
+	if (shop === "tantis" && tantisPage(html)?.component === "ProductPage") return parseTantisPage(html, b, checked, pageUrl);
 	const source = bookstores.find((s) => s.key === shop).name;
 	const out = [];
 	for (const product of nodes(html)) {
@@ -1924,7 +1983,7 @@ async function bookstoreOffers(b, checked, shop, read) {
 	let pagePartial = false;
 	let coverage = "";
 	try {
-		const listing = await readSearchPages(bookstoreUrl(b, shop), read);
+		const listing = await readSearchPages(bookstoreUrl(b, shop), read, void 0, shop === "tantis" ? 18e3 : 12e3);
 		pagePartial = listing.partial;
 		coverage = listing.coverage;
 		searchHTML = listing.pages.map((p) => p.html).join(" ");
@@ -1957,7 +2016,7 @@ async function bookstoreOffers(b, checked, shop, read) {
 		}
 	}), 2);
 	if (!out.length && lastError) throw lastError;
-	if (!out.length && !productWithoutPrice && (searchFailed || failed || !urls.length && !/nie znaleziono|brak wynik|no results|0 results/i.test(clean(searchHTML)) && !(shop === "tania" && /<h1\b[^>]*class=["'][^"']*listing__title[^"']*["'][^>]*>[\s\S]*?Wyniki wyszukiwania/i.test(searchHTML)))) throw Error("Nie udało się potwierdzić cen księgarni.");
+	if (!out.length && !productWithoutPrice && (searchFailed || failed || !urls.length && !/nie znaleziono|brak wynik|no results|0 results/i.test(clean(searchHTML)) && !(shop === "tantis" && tantisPage(searchHTML)?.component === "SearchPage" && Number.isInteger(tantisPage(searchHTML)?.props.searchResult?.total) && tantisPage(searchHTML)?.props.searchResult?.total >= 0 && Array.isArray(tantisPage(searchHTML)?.props.products)) && !(shop === "blackwells" && /<p\b[^>]*class=["'][^"']*\bsearch-result-figures\b[^"']*["'][^>]*>\s*\d+\s+results?\s*<\/p>/i.test(searchHTML)) && !(shop === "tania" && /<h1\b[^>]*class=["'][^"']*listing__title[^"']*["'][^>]*>[\s\S]*?Wyniki wyszukiwania/i.test(searchHTML)))) throw Error("Nie udało się potwierdzić cen księgarni.");
 	return {
 		offers: [...new Map(out.map((o) => [o.id, o])).values()],
 		partial: pagePartial || searchFailed || failed > 0,
@@ -2348,7 +2407,7 @@ async function readWithConnectionRetry(read, signal, enabled) {
 		return read();
 	}
 }
-var SCANNER_VERSION = 51;
+var SCANNER_VERSION = 52;
 var sourcePriority = {
 	"Vinted": 10,
 	"Booksale": 3,
@@ -2653,7 +2712,7 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	return {
 		id: b.id,
 		checked,
-		scannerVersion: 51,
+		scannerVersion: 52,
 		language,
 		scope,
 		selectedSources,
