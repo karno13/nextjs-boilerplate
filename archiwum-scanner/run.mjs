@@ -33,10 +33,16 @@ async function api(body,retries=3){
  for(let attempt=0;;attempt++){
   try{
    const response=await fetch(endpoint,{method:'POST',headers:{'X-Archiwum-GitHub-Token':await token(),'Content-Type':'application/json'},body:JSON.stringify({...body,identityToken:await token()}),signal:AbortSignal.timeout(70_000),redirect:'error'});
-   if(response.status===409){const details=await response.json().catch(()=>({}));return {changed:true,reason:details.code||'QUEUE_CHANGED',retryAfter:Number(response.headers.get('Retry-After')||5)};}
+   if(response.status===409){
+    const details=await response.json().catch(()=>({})),retryAfter=Math.min(30,Math.max(1,Number(response.headers.get('Retry-After'))||5));
+    // A timed-out write may still hold the book lease. Retry the SAME result,
+    // rather than discarding already fetched offers and fetching shops again.
+    if(body.action==='result'&&details.code==='SCAN_BUSY'&&attempt<retries){console.log(JSON.stringify({retry:{action:body.action,reason:'SCAN_BUSY',attempt:attempt+1,retryAfter}}));await wait(retryAfter*1000);continue;}
+    return {changed:true,reason:details.code||'QUEUE_CHANGED',retryAfter};
+   }
    if(!response.ok){const details=await response.json().catch(()=>({}));const error=Object.assign(new Error('Site '+body.action+' HTTP '+response.status+(typeof details.code==='string'?' '+details.code:'')),{status:response.status});throw error;}
    return await response.json();
-  }catch(error){if(attempt>=retries||error.status&&error.status<500)throw error;await wait(3000*(attempt+1));}
+  }catch(error){if(attempt>=retries||error.status&&error.status<500)throw error;console.log(JSON.stringify({retry:{action:body.action,reason:error.name||'Error',status:error.status,attempt:attempt+1}}));await wait(3000*(attempt+1));}
  }
 }
 function policy(){let next=0;return {async beforeRead(signal){await wait(Math.max(0,next-Date.now()),undefined,{signal});next=Date.now()+2000;},async onFailure(){}};}
