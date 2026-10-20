@@ -650,7 +650,8 @@ var additionalStores = [
 	{
 		key: "vanaheim",
 		name: "Vanaheim",
-		url: "https://vanaheim.pl/pl/557-ksiazki-warhammer-40000"
+		url: "https://vanaheim.pl/pl/1130-warhammer-fantasy-pl",
+		extraUrls: ["https://vanaheim.pl/pl/559-warhammer-fantasy", "https://vanaheim.pl/pl/555-black-library"]
 	},
 	{
 		key: "warhammer",
@@ -717,8 +718,7 @@ var additionalStores = [
 	{
 		key: "piekielko",
 		name: "RPG Piekiełko",
-		url: "https://rpg-piekielko.pl/pl/menu/warhammer-horus-heresy-3253.html",
-		extraUrls: ["https://rpg-piekielko.pl/pl/menu/warhammer-40-000-3071.html"]
+		url: "https://rpg-piekielko.pl/pl/menu/warhammer-age-of-sigmar-3070.html"
 	},
 	{
 		key: "booksale",
@@ -749,7 +749,7 @@ var additionalStores = [
 	{
 		key: "2d6",
 		name: "2d6",
-		url: "https://www.2d6.pl/pl/menu/ksiazki-black-library-warhammer-40k-556.html"
+		url: "https://www.2d6.pl/pl/menu/ksiazki-black-library-age-of-sigmar-551.html"
 	},
 	{
 		key: "lagano",
@@ -2871,7 +2871,7 @@ async function readWithConnectionRetry(read, signal, enabled) {
 		return read();
 	}
 }
-var SCANNER_VERSION = 51;
+var SCANNER_VERSION = 52;
 var sourcePriority = {
 	"Vinted": 10,
 	"Booksale": 3,
@@ -3206,7 +3206,7 @@ async function scanBook(b, cooldowns = {}, scope = "all", selectedSources, budge
 	return {
 		id: b.id,
 		checked,
-		scannerVersion: 51,
+		scannerVersion: 52,
 		language,
 		scope,
 		selectedSources,
